@@ -1,0 +1,4 @@
+# Streamlit runtime config (loaded by both local and Streamlit Cloud).
+# - browser.gatherUsageStats: 開発者向けテレメトリを無効化
+[browser]
+gatherUsageStats = false
