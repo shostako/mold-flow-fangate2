@@ -13,6 +13,18 @@
 - Streamlit UI `app.py`（v0.3.0）: fangate の app.py からソルバ設定とメインパネルを持ち込み、形状入力だけ差し替え。
   形状ウィジェットは `fg_<field>` キー。UI テストは `tests/ui_helpers.py` の `app(fast=True)`（4 mm セル）で回す。
   fangate の builder 依存テストは全部新 builder で書き直し済み（`test_fan_gate_ui` → `test_fan_runner_ui`）
+- 射出条件は**実機のスクリュー設定から**（v0.4.0、sim #88/#89/#90 の横展開）。`core/injection_profile.py` の
+  `InjectionProfile` がスクリュー径・計量位置・各段の速度切替位置と速度から体積 → 時刻の区分線形写像を作り、
+  `HeleShawSolver.injection_profile` に渡すと体積 CDF 写像がそこを通る（`injection_volume_flow_cm3s` に優先。
+  無指定なら従来の定率で既存結果と bit 一致）。段の注入体積は速度によらずストロークだけで決まるので、
+  折れ点の体積は固定で傾きだけが段ごとに変わる。**既定は機械の設定（φ50 / V/P 18 / 3 段・全段 200 mm/s）だが、
+  計量位置だけ本リポ固有の 150 mm** — 既定形状が 219.4 cm³ あって sim の 30 mm（理論射出量 23.6 cm³）では
+  全然足りず、既定画面が常に外挿警告を出すため。キャビティを覆う最小ストロークに 15% の余裕を足して 10 mm 丸めた
+  **逆算値**で、実機の設定値ではない。切替位置も sim の 28/22 は別案件のものなので持ち込まずストロークを等分割。
+  V/P を越える体積は最終段の射出率で外挿し、理論射出量がキャビティ体積や計量体積を下回るときは警告を出す。
+  スキン層の時計の UI 既定も `constant_rate`（速度制御）に変えた（ライブラリ既定は `constant_pressure` のまま）
+- `tests/test_injection_ui.py` の期待既定値は先頭の定数ブロック（`DEF_METER` / `DEF_SWITCHES` 等）1 箇所に集約してある。
+  sim / fangate と共有するファイルなので、値を変えるときは `app.py` の定数と両方を直す
 - 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest`
 - Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期

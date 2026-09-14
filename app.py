@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import shutil
 import tempfile
 import zipfile
@@ -41,6 +42,7 @@ from core import (
     wrap_standalone_html,
 )
 from core.geometry import Geometry
+from core.injection_profile import InjectionProfile, InjectionStage
 from core.settings_record import config_settings, settings_json
 from core.solver import WELD_MIN_ANGLE_DEG
 from core.two_phase import solve_two_phase_short_shot
@@ -57,6 +59,28 @@ from core.visualizer import (
 )
 
 APP_DIR = Path(__file__).parent
+
+#: Default machine conditions for the screw-side injection block. A real
+#: shot is a screw diameter plus positions and speeds; the rate follows from
+#: them. The previous default -- a flat 589 cm^3/s -- was a spec-sheet
+#: *maximum*, so every condition ran as if the screw were flat out.
+DEF_SCREW_DIAMETER_MM = 50.0
+DEF_METERING_POSITION_MM = 150.0
+DEF_VP_POSITION_MM = 18.0
+DEF_SCREW_VELOCITY_MMS = 200.0
+#: Same machine as the sibling repos, but this part is two orders of
+#: magnitude larger, so the metering position is the one setting that
+#: differs: the stroke has to displace the cavity as drawn (plus a margin)
+#: before the volume-to-time map stops extrapolating past V/P. The machine
+#: runs three equal-speed steps -- arithmetically a single stage, kept as
+#: the default because it is what its screen says -- but the switch points
+#: of the other job do not carry over, so the stroke is split evenly.
+DEF_INJECTION_STAGES = 3
+DEF_SWITCH_POSITIONS_MM = ()
+#: Cap on the stage count the UI will unfold. Machines go further; this is
+#: the point past which the sidebar stops being readable.
+MAX_INJECTION_STAGES = 5
+
 
 #: Label recorded in ``settings.json`` for the one geometry input this app has.
 GEOMETRY_SOURCE = "Fan runner plate (parametric)"
@@ -100,6 +124,10 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- 解いた $\\tau$ を最大値で正規化し、絶対時間に換算: "
         r"$t_{\text{fill}}(x,y) = \dfrac{\tau(x,y)}{\tau_{\max}} \cdot T_{\text{fill}}$"
         "\n- $T_{\\text{fill}} = V_{\\text{cavity}} / Q$（射出率一定）\n"
+        "- 多段射出（実機条件モードで段数 2 以上）では $Q$ が段ごとに変わるので、"
+        "体積 → 時刻の写像が段の切替体積で折れる区分線形になる。"
+        "各段の注入体積 $\\pi D^2/4 \\cdot L_i$ は速度によらずストロークだけで決まるので、"
+        "折れ点の体積は固定で、傾き（＝射出率）だけが段ごとに変わる\n"
         "- 流動先端の進行は $\\tau$ の等値線として可視化"
     )
 
@@ -423,6 +451,201 @@ def _fan_runner_sidebar() -> dict:
     return v
 
 
+#: Internal field names of ``InjectionProfile`` mapped to the sidebar's own
+#: wording. ``validate()`` names ``stages[1].end_position_mm``; the widget
+#: above it is labelled ``第2段 速度切替位置``. Leaving the raw name on screen
+#: makes the user translate a 0-indexed English path into a 1-indexed Japanese
+#: label to work out which box to fix (@claude on PR #89).
+_STAGE_FIELD_JA = {
+    "end_position_mm": "速度切替位置",
+    "velocity_mms": "射出速度",
+}
+
+
+def _injection_error_ja(message: str) -> str:
+    """Render an ``InjectionProfile.validate()`` message in the sidebar's words.
+
+    Both halves need translating, not just the field path: leaving "must be
+    below" next to 第2段 produces a sentence that is half English and reads
+    as an internal error rather than as "you set these two boxes the wrong
+    way round".
+    """
+
+    def _stage(m: re.Match[str]) -> str:
+        field = _STAGE_FIELD_JA.get(m.group(2), m.group(2))
+        return f"第{int(m.group(1)) + 1}段の{field}"
+
+    out = re.sub(r"stages\[(\d+)\]\.(\w+)", _stage, message)
+    out = out.replace("metering_position_mm", "計量位置")
+    out = out.replace("screw_diameter_mm", "スクリュー径")
+    out = re.sub(
+        r"^(.*?) must be below (.*?)(?: --.*)?$",
+        r"\1 は \2 より小さくしてください",
+        out,
+    )
+    out = out.replace("must be a positive finite value", "は正の有限値である必要があります")
+    out = out.replace("must be finite and >= 0", "は 0 以上の有限値である必要があります")
+    out = out.replace("at least one injection stage is required", "射出段数は 1 以上必要です")
+    return out
+
+
+def _injection_rate_inputs(
+    mode: str,
+) -> tuple[InjectionProfile | None, float | None, str | None]:
+    """The rate half of the injection block: a screw profile, or a flat Q.
+
+    Returns ``(profile, Q_cm3s, error)``. Exactly one of the first two is set
+    when ``error`` is None. On a rejected machine condition both are None and
+    ``error`` carries the message -- the caller stops the run rather than
+    this function calling ``st.stop()``, which sits above the version caption
+    and would take it off the screen with the error still on it.
+
+    The stage widgets are laid out with static bounds (the metering and V/P
+    positions of the run) and the ordering is checked afterwards instead of
+    being enforced by nesting each stage's ``max_value`` under the previous
+    one's value. Chained dynamic bounds re-create the widget on every edit,
+    and the value snaps back to the default while the user is still typing --
+    the same trap the shot-volume follow already fell into (v0.41.1).
+    """
+    if mode == "direct":
+        Q = st.slider(
+            "射出率 [cm³/s]",
+            1.0,
+            800.0,
+            589.0,
+            step=1.0,
+            key="inj_Q_direct",
+            help="ソディック等の成形機取説の射出率に対応。"
+            "取説の値は機械の最大射出率なので、実際より速く充填されることがある。",
+        )
+        return None, float(Q), None
+
+    screw_d = st.number_input(
+        "スクリュー径 [mm]",
+        min_value=5.0,
+        max_value=200.0,
+        value=DEF_SCREW_DIAMETER_MM,
+        step=1.0,
+        key="inj_screw_d",
+        help="バレル内でスクリューが押しのける断面の直径。Q = πD²/4 × v。",
+    )
+    meter_pos = st.number_input(
+        "計量位置 [mm]",
+        min_value=0.5,
+        max_value=1000.0,
+        value=DEF_METERING_POSITION_MM,
+        step=1.0,
+        key="inj_meter_pos",
+        help="射出開始時のスクリュー位置。ここから前進する。",
+    )
+    vp_pos = st.number_input(
+        "V/P切替位置 [mm]",
+        min_value=0.0,
+        max_value=1000.0,
+        value=DEF_VP_POSITION_MM,
+        step=0.5,
+        key="inj_vp_pos",
+        help="速度制御から保圧に切り替わる位置。ここまでが充填。",
+    )
+    n_stages = int(
+        st.number_input(
+            "射出段数",
+            min_value=1,
+            max_value=MAX_INJECTION_STAGES,
+            value=DEF_INJECTION_STAGES,
+            step=1,
+            key="inj_num_stages",
+            help="1 なら計量位置から V/P まで一定速度。2 以上にすると"
+            "各段の速度切替位置と速度の欄が出る。",
+        )
+    )
+
+    if vp_pos >= meter_pos:
+        return (
+            None,
+            None,
+            (
+                f"V/P切替位置 ({vp_pos:g} mm) が計量位置 ({meter_pos:g} mm) 以上です。"
+                "スクリューは前進するので、V/P は計量位置より小さい必要があります。"
+            ),
+        )
+
+    # Only the boundaries between stages are asked for; the last stage always
+    # ends at V/P, which is what makes it the V/P transfer. Defaults are the
+    # machine's own switch points at the default stage count, an even split of
+    # the stroke otherwise.
+    span = meter_pos - vp_pos
+    switches: list[float] = []
+    for i in range(n_stages - 1):
+        default = meter_pos - span * (i + 1) / n_stages
+        if (
+            n_stages == DEF_INJECTION_STAGES
+            and i < len(DEF_SWITCH_POSITIONS_MM)
+            and vp_pos < DEF_SWITCH_POSITIONS_MM[i] < meter_pos
+        ):
+            # The machine's own switch points, as long as they still sit
+            # inside the stroke the user has dialled in.
+            default = DEF_SWITCH_POSITIONS_MM[i]
+        switches.append(
+            float(
+                st.number_input(
+                    f"第{i + 1}段 速度切替位置 [mm]",
+                    min_value=float(vp_pos),
+                    max_value=float(meter_pos),
+                    value=float(default),
+                    step=0.5,
+                    key=f"inj_switch_{i}",
+                )
+            )
+        )
+    velocities = [
+        float(
+            st.number_input(
+                f"第{i + 1}段 射出速度 [mm/s]",
+                min_value=0.1,
+                max_value=1000.0,
+                value=DEF_SCREW_VELOCITY_MMS,
+                step=1.0,
+                key=f"inj_velocity_{i}",
+            )
+        )
+        for i in range(n_stages)
+    ]
+
+    ends = [*switches, float(vp_pos)]
+    try:
+        profile = InjectionProfile(
+            screw_diameter_mm=float(screw_d),
+            metering_position_mm=float(meter_pos),
+            stages=tuple(
+                InjectionStage(end_position_mm=e, velocity_mms=v) for e, v in zip(ends, velocities)
+            ),
+        )
+    except ValueError as exc:
+        return (
+            None,
+            None,
+            (
+                f"射出条件が成立しません: {_injection_error_ja(str(exc))}。"
+                "速度切替位置は計量位置から V/P 位置へ向かって降順に並べてください"
+                "（最終段は V/P 位置で終わります）。"
+            ),
+        )
+
+    lines = [
+        f"射出率（平均）: **{profile.mean_rate_cm3s:.1f} cm³/s**",
+        f"射出時間 (V/P まで): **{profile.total_time_s:.3f} s**",
+        f"理論射出量 (V/P 時点): **{profile.total_volume_cm3:.2f} cm³**",
+    ]
+    if profile.num_stages > 1:
+        for i, (rate, t, vol) in enumerate(
+            zip(profile.stage_rates_cm3s(), profile.stage_times_s(), profile.stage_volumes_mm3())
+        ):
+            lines.append(f"　第{i + 1}段: {rate:.1f} cm³/s / {t:.3f} s / {vol / 1000.0:.2f} cm³")
+    st.caption("  \n".join(lines))
+    return profile, None, None
+
+
 def build_geometry(v: dict) -> tuple[Geometry, dict]:
     """Assemble the config from the sidebar values and rasterise it.
 
@@ -470,15 +693,31 @@ with st.sidebar:
             _mold_max,
             max(_mold_min, min(50, _mold_max)),
         )
-        inj_v = st.slider("射出速度 [mm/s] (代表)", 5.0, 400.0, 200.0, step=5.0)
-        inj_Q = st.slider(
-            "射出率 [cm³/s]",
-            1.0,
-            800.0,
-            589.0,
-            step=1.0,
-            help="ソディック等の成形機取説の射出率に対応。",
+        inj_v = st.slider(
+            "代表流動速度 [mm/s]",
+            5.0,
+            400.0,
+            200.0,
+            step=5.0,
+            key="inj_rep_velocity",
+            help="キャビティ内のギャップ平均流速。代表せん断速度 6V/h に入り、"
+            "Cross-WLF の粘度だけを決める。**スクリューの射出速度とは別物**で、"
+            "薄板では 1 桁大きい（バレルの断面積とキャビティの断面積が違う）。"
+            "充填時間の絶対値はこの値ではなく下の射出率が決める。",
         )
+        inj_mode = st.radio(
+            "射出率の指定",
+            options=("machine", "direct"),
+            index=0,
+            key="inj_mode",
+            format_func=lambda m: {
+                "machine": "実機条件から計算（スクリュー径・位置・速度）",
+                "direct": "射出率を直接入力",
+            }[m],
+            help="実機条件: Q = πD²/4 × v。成形機に実際に入れる数字から射出率と"
+            "V/P までの射出時間を出す。直接入力: 取説の射出率をそのまま使う。",
+        )
+        inj_profile, inj_Q, inj_error = _injection_rate_inputs(inj_mode)
 
     with st.expander("壁面冷却モデル", expanded=False):
         wall_model = st.radio(
@@ -547,11 +786,15 @@ with st.sidebar:
             skin_clock_mode = st.radio(
                 "スキン層の時計",
                 options=("constant_pressure", "constant_rate"),
-                index=0,
+                # v0.42.2: 速度制御が既定。実機条件（スクリュー位置と速度）が
+                # 既定の射出入力になった以上、時計だけ「機械が速度を保てない」
+                # 側に倒れていると、設定どおりの射出時間を入れた画面が設定
+                # どおりでない充填時間を返す。圧力一定は既存結果の再現用に残す。
+                index=1,
                 key="skin_clock",
                 format_func=lambda m: {
                     "constant_pressure": "圧力一定（従来）: 抵抗増で流量が細り T_fill が伸びる",
-                    "constant_rate": "速度制御: 射出時間 V/Q 固定、圧力が上がる",
+                    "constant_rate": "速度制御（既定）: 射出時間 V/Q 固定、圧力が上がる",
                 }[m],
                 help=(
                     "スキンで流路が痩せたとき機械がどう応えるか。速度制御で射出する"
@@ -560,6 +803,17 @@ with st.sidebar:
                     "二相ショートショットの射出相は計量 V/Q の定義上つねに速度制御。"
                 ),
             )
+            if inj_profile is not None and skin_clock_mode == "constant_pressure":
+                # A screw profile prescribes a rate. Holding pressure instead
+                # is the "machine could not keep up" scenario; the profile's
+                # shape survives (every stage stretches by the same factor)
+                # but the times are no longer the ones on the machine.
+                st.caption(
+                    "実機条件（スクリュー位置と速度）は速度制御そのものです。"
+                    "圧力一定を選ぶと、抵抗増のぶん**プロファイル全体が同じ倍率で**"
+                    "引き伸ばされ、V/P までの射出時間は設定値と一致しなくなります。"
+                    "設定どおりの充填時間を見たいなら「速度制御」を選んでください。"
+                )
         elif wall_model == "multilayer":
             num_layers = st.slider(
                 "層数 N",
@@ -893,7 +1147,7 @@ with col_left:
 analysis_inputs = {
     "geometry": geom_settings,
     "material": material_key,
-    "injection": (melt_C, mold_C, inj_v, inj_Q),
+    "injection": (melt_C, mold_C, inj_v, inj_Q, inj_profile),
     "wall_cooling": (
         ("skin", c_skin, skin_max_iter, skin_tol, skin_clock_mode)
         if skin_on
@@ -945,6 +1199,9 @@ if do_run:
             "（メモリ枯渇によるアプリのクラッシュを防ぐためのガードです。）"
         )
         st.stop()
+    if inj_error is not None:
+        st.error(inj_error)
+        st.stop()
     with st.spinner("Hele-Shaw方程式を解いている…"):
         if multilayer_on:
             solver = MultilayerHeleShawSolver(
@@ -954,6 +1211,7 @@ if do_run:
                 mold_temperature_K=mold_C + 273.15,
                 injection_velocity_mms=inj_v,
                 injection_volume_flow_cm3s=inj_Q,
+                injection_profile=inj_profile,
                 compression_molding=icm,
                 compression_factor=comp_factor,
                 compression_stroke_mm=comp_stroke,
@@ -974,6 +1232,7 @@ if do_run:
                 mold_temperature_K=mold_C + 273.15,
                 injection_velocity_mms=inj_v,
                 injection_volume_flow_cm3s=inj_Q,
+                injection_profile=inj_profile,
                 compression_molding=icm,
                 compression_factor=comp_factor,
                 compression_stroke_mm=comp_stroke,
@@ -1028,7 +1287,9 @@ if do_run:
                 "melt_temperature_C": melt_C,
                 "mold_temperature_C": mold_C,
                 "injection_velocity_mms": inj_v,
+                "rate_input_mode": inj_mode,
                 "injection_volume_flow_cm3s": inj_Q,
+                "injection_profile": (None if inj_profile is None else inj_profile.as_record()),
             },
             "wall_cooling": (
                 {
@@ -1313,6 +1574,30 @@ if "mfs_result" in st.session_state:
         c1.metric("総充填時間 T_fill", f"{result.total_fill_time_s:.3f} s")
         c2.metric("代表粘度 η_eff", f"{result.viscosity_Pa_s:.1f} Pa·s")
         c3.metric("キャビティ体積", f"{geom.volume_cm3():.2f} cm³")
+        # Read the run's own record, not the sidebar: the pane also renders
+        # from a cached result, and the sidebar may have moved since.
+        _prof_rec = result.metadata.get("injection_profile")
+        if _prof_rec is not None:
+            _V_shot_cm3 = float(_prof_rec["total_volume_cm3"])
+            _V_cav_cm3 = geom.volume_cm3()
+            st.caption(
+                f"射出条件: 平均 {_prof_rec['mean_rate_cm3s']:.1f} cm³/s、"
+                f"V/P まで {_prof_rec['total_time_s']:.3f} s、"
+                f"理論射出量 {_V_shot_cm3:.2f} cm³"
+            )
+            if _V_shot_cm3 < _V_cav_cm3:
+                # Past V/P the volume-to-time map extrapolates at the last
+                # stage's rate — the fill time is then "if the machine kept
+                # going", not a fill this shot achieves. Say so rather than
+                # letting the number pass as a prediction.
+                st.warning(
+                    f"理論射出量 {_V_shot_cm3:.2f} cm³ がキャビティ体積 "
+                    f"{_V_cav_cm3:.2f} cm³ を下回っています。V/P 以降も最終段の"
+                    "射出率で射出し続けた前提の時間軸になっているので、"
+                    f"{_V_shot_cm3:.2f} cm³ を超えた分の充填時刻は外挿です。"
+                    "計量律速のショートショットは「ショートショット（計量制限）」"
+                    "で見てください。"
+                )
 
         def _download(label: str, path: Path, mime: str, key: str) -> None:
             with open(path, "rb") as _f:
@@ -1393,6 +1678,20 @@ if "mfs_result" in st.session_state:
                                 else ""
                             )
                         )
+                if md2.get("injection_extrapolated_past_vp"):
+                    # The sidebar's own extrapolation check compares the
+                    # stroke against the *final* cavity; neither the metered
+                    # shot nor the open-gap cavity is that number, so this
+                    # panel has to say it for itself (@claude on PR #89).
+                    st.warning(
+                        "この二相解析は V/P より先を外挿しています。理論射出量 "
+                        f"{md2.get('injection_profile_volume_cm3', 0.0):.2f} cm³ に対し、"
+                        f"計量 {md2['shot_volume_cm3']:.2f} cm³ ／ 開きキャビティ "
+                        f"{md2.get('cavity_volume_open_cm3', float('nan')):.2f} cm³ が"
+                        "それを超えているためで、射出時間は最終段の射出率で射出し続けた"
+                        "前提の値です。計量位置と V/P 位置を実機に合わせるか、"
+                        "計量体積を理論射出量以下にしてください。"
+                    )
                 tc1, tc2, tc3 = st.columns(3)
                 tc1.metric("計量体積 V_shot", f"{md2['shot_volume_cm3']:.2f} cm³")
                 tc2.metric(
