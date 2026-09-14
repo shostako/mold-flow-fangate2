@@ -24,6 +24,10 @@
 - Codex P2 × 2（PR #4）: フランクが円にぎりぎり届く形状を粗メッシュでラスタすると三角形と円が 2 島に割れてゲートが
   製品に届かない → ラスタ後に `scipy.ndimage.label` で連結を確認して builder が明示エラー。丸端が製品幅＋パッドより
   広いと格子外で黙って切れる → `runner_end_d_mm ≤ runner_w_mm` を `validate` に追加
+- Claude レビュー（PR #4）: `HeleShawSolver._restricted_to` が部分ジオメトリに `compression_mask` しか引き継がず、
+  `product_mask` が `compression_mask` と別物になったこのリポでは部分ジオメトリの表示原点が内側の下端に落ちる
+  （現状その経路で表示はしないが地雷）→ `product_mask` / `valve_axis_x_mm` / `valve_marker_mm` も引き継ぐ。
+  鏡映対称テストに `cell_size_mm ∈ {1, 0.5, 2}` を追加
 
 ## [0.1.0] — 2026-09-14
 

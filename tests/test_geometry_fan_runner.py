@@ -243,13 +243,16 @@ def test_product_edge_sits_on_a_cell_edge(pad_mm, cell):
     assert cols.size == round(cfg.plate_w_mm / cell)
 
 
+@pytest.mark.parametrize("cell", [1.0, 0.5, 2.0])
 @pytest.mark.parametrize("pad_mm", [5.0, 5.3])
 @pytest.mark.parametrize("plate_w_mm", [302.26, 315.0, 300.0])
-def test_raster_is_mirror_symmetric_about_the_axis(pad_mm, plate_w_mm):
+def test_raster_is_mirror_symmetric_about_the_axis(pad_mm, plate_w_mm, cell):
     """302.26 wide puts the axis 0.13 mm off the cell grid; the x lift puts
     it back on a cell edge (even column count) or centre (odd) so every row
     of the mask and thickness map mirrors about the axis."""
-    cfg = FanRunnerPlateConfig(pad_mm=pad_mm, plate_w_mm=plate_w_mm, balancer_on=True)
+    cfg = FanRunnerPlateConfig(
+        pad_mm=pad_mm, plate_w_mm=plate_w_mm, cell_size_mm=cell, balancer_on=True
+    )
     g = build_fan_runner_plate_geometry(cfg)
     js = np.arange(g.nx)
     jm = np.rint(2.0 * cfg.axis_x_mm / cfg.cell_size_mm - 1.0 - js).astype(int)
@@ -414,3 +417,30 @@ def test_round_end_never_leaves_the_allocated_grid():
         FanRunnerPlateConfig(
             plate_w_mm=100.0, runner_w_mm=100.0, runner_len_mm=60.0, runner_end_d_mm=120.0
         ).validate()
+
+
+def test_a_restricted_solver_keeps_the_product_origin_and_the_valve_marker():
+    """Claude review on PR #4: ``HeleShawSolver._restricted_to`` rebuilt the
+    geometry with only ``compression_mask``; with body-only compression the
+    display origin of that copy fell back to the body's bottom edge instead of
+    the rim edge, and the true-scale gate marker was lost."""
+    from core import HeleShawSolver, MaterialDB
+
+    g = build_fan_runner_plate_geometry(FanRunnerPlateConfig(cell_size_mm=2.0))
+    mat = MaterialDB().get("PMMA")
+    solver = HeleShawSolver(
+        g,
+        mat,
+        melt_temperature_K=sum(mat.T_melt_recommended) / 2,
+        mold_temperature_K=sum(mat.T_mold_recommended) / 2,
+        injection_volume_flow_cm3s=100.0,
+        compression_molding=True,
+        compression_stroke_mm=0.5,
+    )
+    live = g.mask.copy()
+    live[np.where(g.product_mask.any(axis=1))[0].max() - 10 :, :] = False  # drop the far rows
+    sub = solver._restricted_to(live).geometry
+    assert sub.display_origin_mm() == pytest.approx(g.display_origin_mm())
+    assert sub.valve_marker_mm == g.valve_marker_mm
+    assert sub.valve_axis_x_mm == g.valve_axis_x_mm
+    assert (sub.product_mask == (g.product_mask & live)).all()

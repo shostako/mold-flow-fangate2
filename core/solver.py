@@ -531,6 +531,13 @@ class HeleShawSolver:
             compression_mask=(
                 None if geom.compression_mask is None else geom.compression_mask & live
             ),
+            # the display origin falls back to compression_mask when product_mask
+            # is None; with body-only compression (fan_runner) that fallback would
+            # put y = 0 on the body instead of the rim edge, so carry the product
+            # marker and the nominal valve position too (Claude review on PR #4)
+            product_mask=(None if geom.product_mask is None else geom.product_mask & live),
+            valve_axis_x_mm=geom.valve_axis_x_mm,
+            valve_marker_mm=geom.valve_marker_mm,
         )
         return replace(
             self,
