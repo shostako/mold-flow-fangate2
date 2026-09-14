@@ -3,6 +3,24 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) 準拠、[セマンティック バージョニング](https://semver.org/lang/ja/) に従う。
 `0.x` 系のため、マイナー版の更新に後方非互換の変更を含むことがある。
 
+## [0.3.0] — 2026-09-14
+
+**Streamlit UI。** fangate v0.7.3 の `app.py` からソルバ設定とメインパネルを持ち込み、形状サイドバーだけ
+`FanRunnerPlateConfig` 向けに差し替えた（`_fan_runner_sidebar()`、ウィジェットキーは `fg_<field>`）。
+
+### 追加
+
+- サイドバー: 製品（額縁プレート、圧縮は内側だけの注記）／ランナ（幅・フランク角・長さ・丸端 φ、深さ別の肉厚 4 欄、ゲート φ）／
+  肉盗み（上限は `balancer_limits_mm` に追従、置けない形状は警告して OFF）／メッシュ。フランク角の欄にフランク延長の頂点深さと
+  丸端上端の深さを併記
+- プレビューの厚みマップに圧縮部（内側）の赤枠。説明文（ICM の膨張対象、モデル化している現象、ゲート圧損）をこの金型に合わせた
+- テスト: `test_fan_runner_ui` 新設、fangate の `test_two_phase_ui` / `test_weld_ui` / `ui_helpers` を移植（既定幅 302.26 に追従）。
+  402 passed
+
+### 持ち込まなかったもの
+
+ゲート形状 radio、タブ、井戸・スプルーの expander（builder に無い）
+
 ## [0.2.0] — 2026-09-14
 
 **図面の builder。** `core/fan_runner.py` に `FanRunnerPlateConfig` / `build_fan_runner_plate_geometry` を新設。既定値は図面
