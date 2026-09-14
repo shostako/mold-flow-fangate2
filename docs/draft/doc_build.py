@@ -18,6 +18,11 @@ import fitz
 from PIL import Image
 
 sdir, pdf_path, ad, out_path = (Path(a) for a in sys.argv[1:5])
+import os  # noqa: E402
+
+# layout knobs (mm); env overrides exist for the fit sweep, the defaults are the sheet
+PLAN_W = float(os.environ.get("DOC_PLAN_W", "100"))
+TABLE_W = float(os.environ.get("DOC_TABLE_W", "94"))
 DPI = 300
 page = fitz.open(pdf_path)[0]  # rotation 90: clip is in the rotated (display) frame, pt
 
@@ -138,9 +143,9 @@ th {{ background: #f0f0f0; font-weight: 600; white-space: nowrap; width: 22mm; }
 .three {{ display: flex; gap: 3mm; align-items: flex-start; }}
 .three > div {{ flex: 1 1 0; min-width: 0; }}
 .two {{ display: flex; gap: 4mm; align-items: flex-start; margin-top: 2mm; }}
-.two .l {{ flex: 0 0 86mm; }} .two .r {{ flex: 1 1 auto; }}
+.two .l {{ flex: 0 0 {TABLE_W}mm; }} .two .r {{ flex: 1 1 auto; }}
 .draw {{ display: flex; gap: 3mm; align-items: flex-start; }}
-.draw .plan {{ flex: 0 0 106mm; }} .draw .secs {{ flex: 0 0 60mm; min-width: 0; }}
+.draw .plan {{ flex: 0 0 {PLAN_W}mm; }} .draw .secs {{ flex: 0 0 60mm; min-width: 0; }}
 .secs img {{ border: .2mm solid #ccc; width: 58mm; }}
 .three img {{ width: 92%; margin: 0 auto; }}
 .foot {{ font-size: 6.6pt; color: #666; margin-top: 1mm; border-top: .2mm solid #bbb; padding-top: 1mm; }}
@@ -204,5 +209,7 @@ with sync_playwright() as p:
     b.close()
 d = fitz.open(str(pdf_out))
 d[0].get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).save(str(ad / "check.png"))
-print(f"{len(html) // 1024} KB, pages={len(d)}", out_path, pdf_out)
+# how much of the last page is used: the bottom of the lowest text block (pt)
+used_pt = max(b[3] for b in d[-1].get_text("blocks")) if d[-1].get_text("blocks") else 0.0
+print(f"{len(html) // 1024} KB, pages={len(d)}, last page used {used_pt / 72 * 25.4:.0f} mm", out_path, pdf_out)
 assert len(d) == 1, "A4 1 ページに収まっていない"
