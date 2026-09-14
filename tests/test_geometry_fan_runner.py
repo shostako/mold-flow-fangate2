@@ -350,6 +350,10 @@ def test_balancer_limits_are_the_validate_bounds():
         ({"runner_end_d_mm": 70.0}, "runner_end_d_mm"),
         ({"fan_flank_deg": 2.0}, "flanks meet"),  # apex 5.2 above the disc top (18)
         ({"gate_d_mm": 30.0}, "gate_d_mm"),
+        (
+            {"runner_w_mm": 20.0, "runner_end_d_mm": 24.0, "fan_flank_deg": 80.0},
+            "runner_end_d_mm",
+        ),  # disc wider than the runner
         ({"cell_size_mm": 30.0}, "cell_size_mm"),
     ],
 )
@@ -369,3 +373,44 @@ def test_validate_accepts_the_flank_that_just_reaches_the_disc_top():
 def test_builder_runs_validate():
     with pytest.raises(ValueError, match="runner_w_mm"):
         build_fan_runner_plate_geometry(FanRunnerPlateConfig(runner_w_mm=400.0))
+
+
+def test_builder_rejects_a_mesh_that_severs_the_runner_from_the_plate():
+    """Codex P2 on PR #4: a flank that just reaches the disc top passes
+    validate, but on a 4 mm mesh the neck between the triangle and the disc
+    has no cell centre — the gate then feeds an island. The builder must say
+    so instead of handing the solver an unreachable plate."""
+    theta = math.degrees(math.atan(18.0 / 150.0)) + 1e-6
+    fine = build_fan_runner_plate_geometry(
+        FanRunnerPlateConfig(fan_flank_deg=theta, cell_size_mm=0.5)
+    )
+    from scipy import ndimage
+
+    assert ndimage.label(fine.mask)[1] == 1
+    with pytest.raises(ValueError, match="disconnected"):
+        build_fan_runner_plate_geometry(FanRunnerPlateConfig(fan_flank_deg=theta, cell_size_mm=4.0))
+
+
+def test_round_end_never_leaves_the_allocated_grid():
+    """Codex P2 on PR #4: the grid is sized by the plate; a disc wider than
+    the plate + pad used to be cropped silently. With ``runner_end_d ≤
+    runner_w ≤ plate_w`` the disc always fits; check the raster carries the
+    whole disc area on a wide-disc config."""
+    cfg = FanRunnerPlateConfig(
+        plate_w_mm=100.0,
+        runner_w_mm=100.0,
+        frame_w_mm=20.0,
+        runner_len_mm=60.0,
+        runner_end_d_mm=100.0,
+    )
+    g = build_fan_runner_plate_geometry(cfg)
+    runner = g.mask & ~g.product_mask
+    rows = np.where(runner.any(axis=1))[0]
+    widths = runner[rows].sum(axis=1)
+    assert widths.max() == pytest.approx(cfg.runner_end_d_mm, abs=1.5)
+    # no runner cell touches the raster's left / right column
+    assert not runner[:, 0].any() and not runner[:, -1].any()
+    with pytest.raises(ValueError, match="runner_end_d_mm"):
+        FanRunnerPlateConfig(
+            plate_w_mm=100.0, runner_w_mm=100.0, runner_len_mm=60.0, runner_end_d_mm=120.0
+        ).validate()

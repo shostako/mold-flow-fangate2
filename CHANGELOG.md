@@ -21,6 +21,9 @@
 - テスト: `test_geometry_fan_runner`（図面の交点・幅・肉厚・体積・対称性・validate）、fangate の builder 依存テスト 4 本
   （two_phase / compression_stroke / settings_record / fill_render）を新 builder で書き直し。364 passed
 - `docs/draft/geometry_draft.py` → `geometry_draft.png`（厚みマップ 3 面）
+- Codex P2 × 2（PR #4）: フランクが円にぎりぎり届く形状を粗メッシュでラスタすると三角形と円が 2 島に割れてゲートが
+  製品に届かない → ラスタ後に `scipy.ndimage.label` で連結を確認して builder が明示エラー。丸端が製品幅＋パッドより
+  広いと格子外で黙って切れる → `runner_end_d_mm ≤ runner_w_mm` を `validate` に追加
 
 ## [0.1.0] — 2026-09-14
 

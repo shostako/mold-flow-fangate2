@@ -63,6 +63,7 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+from scipy import ndimage
 
 from .geometry import Geometry
 
@@ -154,6 +155,12 @@ class FanRunnerPlateConfig:
                 f"the flanks meet at depth {self.apex_depth_mm:.2f} (runner_w_mm / 2 · "
                 f"tan(fan_flank_deg)) which is above the round end's top "
                 f"({self.runner_len_mm - r_end}); the triangle must reach the disc"
+            )
+        if self.runner_end_d_mm > self.runner_w_mm + eps:
+            raise ValueError(
+                f"runner_end_d_mm ({self.runner_end_d_mm}) must be ≤ runner_w_mm "
+                f"({self.runner_w_mm}); the round end is not wider than the runner's edge "
+                f"width, so the disc stays inside the plate's x extent (Codex P2 on PR #4)"
             )
         if self.gate_d_mm > self.runner_end_d_mm + eps:
             raise ValueError(
@@ -300,6 +307,17 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
     if not mask.any():
         raise ValueError(
             f"cell_size_mm ({dx}) rasterises the whole cavity away ({ny}x{nx} grid, no cavity cell)"
+        )
+    # A triangle that only just reaches the disc (validate's lower bound) can
+    # rasterise into two islands on a coarse mesh: the gate then feeds the
+    # round end and the plate is orphaned, which the solver rejects later in
+    # check_gate_reachability with a far less useful message (Codex P2 on PR #4)
+    _, n_parts = ndimage.label(mask)
+    if n_parts != 1:
+        raise ValueError(
+            f"cell_size_mm ({dx}) rasterises the cavity into {n_parts} disconnected parts "
+            f"(the runner's flanks barely reach the round end); refine the mesh or steepen "
+            f"fan_flank_deg"
         )
 
     # --- thickness ---
