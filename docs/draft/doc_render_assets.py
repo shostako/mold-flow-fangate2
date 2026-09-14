@@ -67,12 +67,12 @@ solver = HeleShawSolver(
 )
 r = solver.solve(num_frames=s["output"]["num_frames"])
 T = V.fill_time_max(r)
-assert abs(r.metadata["tau_max"] - m["tau_max"]) < 1e-3 * max(1.0, abs(m["tau_max"]) * 1e-9), "metadata.json と不一致"
+assert abs(r.metadata["tau_max"] - m["tau_max"]) <= 1e-9 * abs(m["tau_max"]), "metadata.json と不一致"
 if skin_on:
     assert abs(T - m["T_fill_baseline_s"] * m["T_fill_inflation"]) < 1e-9, "T_fill が metadata.json と不一致"
 r2 = solve_two_phase_short_shot(solver, tp["shot_volume_cm3"])
 assert abs(r2.metadata["injection_fill_fraction"] - m2["injection_fill_fraction"]) < 1e-9, "two_phase_metadata と不一致"
-assert r2.metadata["final_fill_fraction"] == m2["final_fill_fraction"]
+assert abs(r2.metadata["final_fill_fraction"] - m2["final_fill_fraction"]) < 1e-12
 
 x0, y0 = geom.display_origin_mm()
 dx = geom.cell_size_mm
@@ -224,7 +224,11 @@ info = dict(
         adv_inner_absx_min=ai_absx_min,
         adv_inner_y_bands=bands(ai.any(axis=1)),
         adv_frame_y_bands=bands(af.any(axis=1)),
-        adv_inner_x_bands=[[float(XX[0, a] - dx / 2), float(XX[0, b] + dx / 2)] for a, b in []],
+        # the three rim strips advance independently (the top strip touches the
+        # body directly, it need not be reached through the sides — Claude review on PR #6)
+        adv_rim_sides_y_bands=bands((adv & rim_sides).any(axis=1)),
+        adv_rim_top_y_bands=bands((adv & rim_top).any(axis=1)),
+        adv_rim_bottom_y_bands=bands((adv & rim_bottom).any(axis=1)),
         inner_x_half=cfg.plate_w_mm / 2 - cfg.frame_w_mm,
     ),
     frame_thk=cfg.frame_thk_mm,

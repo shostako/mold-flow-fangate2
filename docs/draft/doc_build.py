@@ -63,13 +63,23 @@ bal_txt = (
     f"肉盗み ▽ 幅 {c['balancer_w_mm']:g} × 高さ {c['balancer_h_mm']:g} t{c['balancer_thk_mm']:g}" if c["balancer_on"] else "肉盗み無し"
 )
 inner_bands = "、".join(f"y={a:g}〜{b:g}" for a, b in tw["adv_inner_y_bands"]) or "無し"
-frame_bands = "、".join(f"y={a:g}〜{b:g}" for a, b in tw["adv_frame_y_bands"]) or "無し"
 # which regions the compression advanced into; each part only when it actually
 # happened (a shot that fills the open cavity during injection advances nothing,
 # and a small stroke can advance only the rim — Codex P2 on PR #6)
 adv_parts = []
-if tw["adv_frame"]:
-    adv_parts.append(f"左右の額縁（{frame_bands}）と上辺の額縁" if tw["adv_rim_top"] else f"額縁（{frame_bands}）")
+
+
+def _bands(key):
+    return "、".join(f"y={a:g}〜{b:g}" for a, b in tw.get(key, [])) or "無し"
+
+
+# the cell counts per strip are already in the summary sentence above
+if tw["adv_rim_sides"]:
+    adv_parts.append(f"左右の額縁（{_bands('adv_rim_sides_y_bands')}）")
+if tw["adv_rim_top"]:
+    adv_parts.append("上辺の額縁")
+if tw["adv_rim_bottom"]:
+    adv_parts.append(f"ランナ側の額縁（{_bands('adv_rim_bottom_y_bands')}）")
 if tw["adv_inner"] and tw["adv_inner_absx_min"] is not None:
     adv_parts.append(f"内側では上の両隅（|x| ≥ {tw['adv_inner_absx_min']:g}、{inner_bands}）")
 if tw["adv_runner"]:
@@ -84,10 +94,15 @@ reading_fill = (
     f"内側 t{c['inner_thk_mm']:g} へは段差の中央 (x={info['inner_first_xy'][0]:g}, y={info['inner_first_xy'][1]:g}) から {info['inner_first_t']:.3f} s で入って上へ扇状に進む。"
     f"額縁 t{c['frame_thk_mm']:g} は内側の 1/{h_ratio:.0f}（h³）しか流れないので、左右の額縁は内側から横に押し出される形で遅れて埋まり（側辺の平均 {info['rim_sides_mean_t']:.2f} s）、"
     f"内側の最後は上の両隅 (±{abs(info['inner_last_xy'][0]):.0f}, {info['inner_last_xy'][1]:g}) で {info['inner_last_t']:.3f} s、上辺の額縁が最後（平均 {info['rim_top_mean_t']:.2f} s、"
-    f"上辺中央 {tp['center']:.3f} s、四隅 {T:.3f} s、赤）。到着時刻の平均は内側 {info['inner_mean_t']:.2f} s に対し額縁 {info['frame_mean_t']:.2f} s。"
+    f"上辺中央 {tp['center']:.3f} s、上の両隅 {T:.3f} s、赤）。到着時刻の平均は内側 {info['inner_mean_t']:.2f} s に対し額縁 {info['frame_mean_t']:.2f} s。"
 )
 short_cm3 = m2["cavity_volume_final_cm3"] - tw["shot_cm3"]
-shot_vs_cav = "＝キャビティ体積" if abs(short_cm3) < 0.005 else f"キャビティ体積 {m2['cavity_volume_final_cm3']:.2f} cm³ より {short_cm3:.2f} cm³ 少ない"
+if abs(short_cm3) < 0.005:
+    shot_vs_cav = "＝キャビティ体積"
+elif short_cm3 > 0:
+    shot_vs_cav = f"キャビティ体積 {m2['cavity_volume_final_cm3']:.2f} cm³ より {short_cm3:.2f} cm³ 少ない"
+else:  # the UI allows a shot above the cavity volume (a complete fill with surplus)
+    shot_vs_cav = f"キャビティ体積 {m2['cavity_volume_final_cm3']:.2f} cm³ より {-short_cm3:.2f} cm³ 多い"
 final_pct = f"{tw['final_fraction']:.0%}" if tw["final_fraction"] >= 1.0 else f"{tw['final_fraction']:.1%}"
 # the unfilled volume is what the model did not fill, not the metering shortfall:
 # with skin seal-off the achieved volume can stay below the shot (Codex P2 on PR #6)
