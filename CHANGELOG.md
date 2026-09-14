@@ -3,6 +3,25 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) 準拠、[セマンティック バージョニング](https://semver.org/lang/ja/) に従う。
 `0.x` 系のため、マイナー版の更新に後方非互換の変更を含むことがある。
 
+## [0.4.1] — 2026-09-15
+
+**Codex P2 4 件の修正**（本 PR で検出、sim v0.42.3 と同一パッチ）。
+
+- `injection_profile` を dataclass の途中に挿したせいで位置引数がずれていた。7 番目の位置引数は
+  `compression_molding` だったので、そこに bool を渡していた呼び出しは profile に bool を束縛し
+  `solve()` の中で `bool.time_at_volume_mm3` に到達する。`field(kw_only=True)` で
+  ソース上の位置は保ったまま `__init__` の末尾へ移した。層別も同じ。
+- 層別ソルバーの metadata に `injection_Q_effective_cm3s` が無く、`FlowResult` /
+  `MultilayerFlowResult` の契約が非対称だった。
+- 二相の外挿フラグが、計量がストローク内でも開きキャビティが超えていれば立っていた。
+  `T_open_total` も写像を通るが到着時刻場の正規化係数として約分され、計量より先のセルは
+  `T_inj` 以降に着いてプールからもスキンの時計からも外れる。外挿値は報告に乗らないので、
+  判定を `V_shot` だけにして文言も直した。
+- メイン結果ペインの外挿警告が最終キャビティ体積としか比べていなかった。ICM ON では写像が
+  読むのは**開いた隙間**の体積なので、ストロークが最終形状を覆っていても V/P より先を読む帯が
+  ある。判定を `solve()` の metadata（`injection_extrapolated_past_vp` /
+  `injection_swept_volume_cm3`）に移し、UI はそのフラグを読む。
+
 ## [0.4.0] — 2026-09-15
 
 **射出率を成形機の設定そのもの（スクリュー径・位置・速度）から出せるようにし、多段射出で
