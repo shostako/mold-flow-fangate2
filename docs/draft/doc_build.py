@@ -59,6 +59,19 @@ bal_txt = (
 )
 inner_bands = "、".join(f"y={a:g}〜{b:g}" for a, b in tw["adv_inner_y_bands"]) or "無し"
 frame_bands = "、".join(f"y={a:g}〜{b:g}" for a, b in tw["adv_frame_y_bands"]) or "無し"
+# which regions the compression advanced into; each part only when it actually
+# happened (a shot that fills the open cavity during injection advances nothing,
+# and a small stroke can advance only the rim — Codex P2 on PR #6)
+adv_parts = []
+if tw["adv_frame"]:
+    adv_parts.append(f"左右の額縁（{frame_bands}）と上辺の額縁" if tw["adv_rim_top"] else f"額縁（{frame_bands}）")
+if tw["adv_inner"] and tw["adv_inner_absx_min"] is not None:
+    adv_parts.append(f"内側では上の両隅（|x| ≥ {tw['adv_inner_absx_min']:g}、{inner_bands}）")
+if tw["adv_runner"]:
+    adv_parts.append(f"ランナ（{tw['adv_runner']} セル）")
+adv_txt = (
+    f"圧縮で埋まる領域は{'、'.join(adv_parts)}。" if adv_parts else "圧縮で埋まる領域は無い（射出中に埋まり切る）。"
+)
 
 reading_fill = (
     f"樹脂はゲート φ{c['gate_d_mm']:g} からランナ（t{c['runner_edge_thk_mm']:g}→{c['runner_thk_mm']:g}）を扇状に広がり、製品エッジの中央 (x=0) に {bo['min_t']:.3f} s、"
@@ -71,19 +84,30 @@ reading_fill = (
 short_cm3 = m2["cavity_volume_final_cm3"] - tw["shot_cm3"]
 shot_vs_cav = "＝キャビティ体積" if abs(short_cm3) < 0.005 else f"キャビティ体積 {m2['cavity_volume_final_cm3']:.2f} cm³ より {short_cm3:.2f} cm³ 少ない"
 final_pct = f"{tw['final_fraction']:.0%}" if tw["final_fraction"] >= 1.0 else f"{tw['final_fraction']:.1%}"
+# the unfilled volume is what the model did not fill, not the metering shortfall:
+# with skin seal-off the achieved volume can stay below the shot (Codex P2 on PR #6)
+unfilled_cm3 = m2["cavity_volume_final_cm3"] - m2["achieved_volume_final_cm3"]
+unfilled_cells = m2["cavity_cells"] - m2["final_cells"]
+unreach = m2["compression_unreachable_cells"]
+if tw["final_fraction"] >= 1.0 and unreach == 0:
+    short_txt = "ショートショット・未充填は無い（圧縮後 100%）。"
+else:
+    causes = []
+    if short_cm3 > 0.005:
+        causes.append(f"計量がキャビティ体積を {short_cm3:.2f} cm³ 下回る")
+    if unreach:
+        causes.append(f"封止の奥へ圧縮が届かないセルが {unreach:,} ある")
+    short_txt = (
+        f"{'、'.join(causes) or '圧縮が届かない'}ので圧縮後 {tw['final_fraction']:.1%}、"
+        f"未充填 {unfilled_cells:,} セル（{unfilled_cm3:.2f} cm³）のショートショット。"
+    )
 reading_tp = (
     f"計量 {tw['shot_cm3']:.1f} cm³（{shot_vs_cav}）を {s['injection']['injection_volume_flow_cm3s']:g} cm³/s で射出（{tw['injection_time_s']:.3f} s）。"
     f"内側だけ型を {s['compression_molding']['stroke_mm']:g} mm 開いた状態で射出中に埋まるのは {tw['injection_fraction']:.0%}（{m2['injection_cells']:,} セル）で、"
     f"残り {1 - tw['injection_fraction']:.0%}（{tw['adv_cells']:,} セル: 額縁 {tw['adv_frame']:,}［側辺 {tw['adv_rim_sides']:,}・上辺 {tw['adv_rim_top']:,}］・内側 {tw['adv_inner']:,}・ランナ {tw['adv_runner']}）は"
-    f"型閉じの圧縮で埋まる。圧縮されるのは内側 t{c['inner_thk_mm']:g} だけだが、押し潰された内側から出た樹脂が額縁へ回る: 圧縮で埋まる領域は左右の額縁（{frame_bands}）と上辺の額縁全部、"
-    f"内側では上の両隅（|x| ≥ {tw['adv_inner_absx_min']:g}、{inner_bands}）。ランナ側の額縁とランナは射出中に埋まっている。"
-    + (
-        "ショートショット・未充填は無い（圧縮後 100%）。"
-        if tw["final_fraction"] >= 1.0 and m2["compression_unreachable_cells"] == 0
-        else f"計量がキャビティ体積を {short_cm3:.2f} cm³ 下回るので圧縮後も {tw['final_fraction']:.1%}、"
-        f"未充填 {m2['cavity_cells'] - m2['final_cells']:,} セル（≈ {short_cm3:.2f} cm³）のショートショット"
-        f"（圧縮で届かないセルは {m2['compression_unreachable_cells']}）。"
-    )
+    f"型閉じの圧縮で埋まる。圧縮されるのは内側 t{c['inner_thk_mm']:g} だけだが、押し潰された内側から出た樹脂が額縁へ回る: {adv_txt}"
+    + ("ランナ側の額縁とランナは射出中に埋まっている。" if not tw["adv_runner"] and not tw["adv_rim_bottom"] else "")
+    + short_txt
 )
 
 wc = s["wall_cooling"]
