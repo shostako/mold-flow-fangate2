@@ -10,6 +10,8 @@
 
 ## 使い方
 
+Streamlit Community Cloud: **<https://mold-flow-fangate2.streamlit.app>**
+
 ローカル:
 
 ```

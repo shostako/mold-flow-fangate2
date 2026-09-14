@@ -14,7 +14,7 @@
   形状ウィジェットは `fg_<field>` キー。UI テストは `tests/ui_helpers.py` の `app(fast=True)`（4 mm セル）で回す。
   fangate の builder 依存テストは全部新 builder で書き直し済み（`test_fan_gate_ui` → `test_fan_runner_ui`）
 - 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest`
-- Streamlit Community Cloud: 配備予定（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
+- Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期
 
 ## fangate から持ち込まなかったもの
