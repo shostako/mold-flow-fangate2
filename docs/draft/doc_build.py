@@ -140,9 +140,9 @@ th {{ background: #f0f0f0; font-weight: 600; white-space: nowrap; width: 22mm; }
 .two {{ display: flex; gap: 4mm; align-items: flex-start; margin-top: 2mm; }}
 .two .l {{ flex: 0 0 98mm; }} .two .r {{ flex: 1 1 auto; }}
 .draw {{ display: flex; gap: 3mm; align-items: flex-start; }}
-.draw .plan {{ flex: 0 0 110mm; }} .draw .secs {{ flex: 0 0 60mm; min-width: 0; }}
+.draw .plan {{ flex: 0 0 106mm; }} .draw .secs {{ flex: 0 0 60mm; min-width: 0; }}
 .secs img {{ border: .2mm solid #ccc; width: 58mm; }}
-.three img {{ width: 94%; margin: 0 auto; }}
+.three img {{ width: 92%; margin: 0 auto; }}
 .foot {{ font-size: 6.6pt; color: #666; margin-top: 1mm; border-top: .2mm solid #bbb; padding-top: 1mm; }}
 .arrow {{ text-align: center; font-size: 9pt; color: #555; margin: 1mm 0; }}
 </style></head>
