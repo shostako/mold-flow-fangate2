@@ -10,16 +10,16 @@
 - builder は `core/fan_runner.py`（`FanRunnerPlateConfig` / `build_fan_runner_plate_geometry`、v0.2.0）。既定値が図面。
   **圧縮マスク＝内側 t4 だけ**、`product_mask`＝額縁＋内側（表示原点は製品エッジ）。ランナ形状は 1 種（三角形 ∪ 丸端の円、
   肉厚は深さだけの関数）、肉盗み `balancer_*` だけ fangate から残した。図は `docs/draft/geometry_draft.png`
-- fangate の builder 依存テストは two_phase / compression_stroke / settings_record / fill_render を新 builder で書き直し済み。
-  UI 依存の 3 本（`test_fan_gate_ui` / `test_two_phase_ui` / `test_weld_ui`）は UI と一緒に
+- Streamlit UI `app.py`（v0.3.0）: fangate の app.py からソルバ設定とメインパネルを持ち込み、形状入力だけ差し替え。
+  形状ウィジェットは `fg_<field>` キー。UI テストは `tests/ui_helpers.py` の `app(fast=True)`（4 mm セル）で回す。
+  fangate の builder 依存テストは全部新 builder で書き直し済み（`test_fan_gate_ui` → `test_fan_runner_ui`）
 - 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest`
 - Streamlit Community Cloud: 配備予定（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期
 
 ## fangate から持ち込まなかったもの
-`core/fan_gate.py`（旧ゲート／ウイング／タブ／井戸／スプルーブッシュ込みの builder）と、それに依存するテスト
-（`test_geometry_fan_gate` / `test_fan_gate_ui` / `test_two_phase` / `test_compression_stroke` / `test_settings_record` /
-`test_fill_render` / `test_two_phase_ui` / `test_weld_ui`）。builder と UI が入った時点で新 builder で書き直す。
+`core/fan_gate.py`（旧ゲート／ウイング／タブ／井戸／スプルーブッシュ込みの builder）と `test_geometry_fan_gate`。
+UI のゲート形状 radio・タブ・井戸／スプルーの expander。
 
 ## builder の設計メモ
 - 座標は fangate と同じ格子系（ランナが下、製品が上、y は上向き）。`display_origin_mm()` で製品エッジ y=0
