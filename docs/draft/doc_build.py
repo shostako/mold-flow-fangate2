@@ -138,7 +138,7 @@ th {{ background: #f0f0f0; font-weight: 600; white-space: nowrap; width: 22mm; }
 .three {{ display: flex; gap: 3mm; align-items: flex-start; }}
 .three > div {{ flex: 1 1 0; min-width: 0; }}
 .two {{ display: flex; gap: 4mm; align-items: flex-start; margin-top: 2mm; }}
-.two .l {{ flex: 0 0 98mm; }} .two .r {{ flex: 1 1 auto; }}
+.two .l {{ flex: 0 0 86mm; }} .two .r {{ flex: 1 1 auto; }}
 .draw {{ display: flex; gap: 3mm; align-items: flex-start; }}
 .draw .plan {{ flex: 0 0 106mm; }} .draw .secs {{ flex: 0 0 60mm; min-width: 0; }}
 .secs img {{ border: .2mm solid #ccc; width: 58mm; }}
