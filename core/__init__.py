@@ -1,5 +1,6 @@
 """mold-flow-fangate2 core package."""
 
+from .fan_runner import FanRunnerPlateConfig, build_fan_runner_plate_geometry
 from .fill_player import (
     CONTROLS_HEIGHT_PX,
     build_fill_player_html,
@@ -32,6 +33,8 @@ __all__ = [
     "cross_wlf_viscosity",
     "Geometry",
     "build_demo_geometry",
+    "FanRunnerPlateConfig",
+    "build_fan_runner_plate_geometry",
     "HeleShawSolver",
     "MultilayerHeleShawSolver",
     "MultilayerFlowResult",
