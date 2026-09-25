@@ -1750,6 +1750,9 @@ if "mfs_result" in st.session_state:
 
         if skin_path is not None and core_path is not None:
             with st.expander("スキン層 / コア層 / ショートショット"):
+                # skin_path exists only for a run solved with skin_layer_enabled
+                # (the same skin_on that built the solver), and such a run always
+                # records skin_iterations / skin_converged / no_flow in metadata
                 md = result.metadata
                 st.caption(
                     f"反復={md.get('skin_iterations')}, 収束={md.get('skin_converged')}, "

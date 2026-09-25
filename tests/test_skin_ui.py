@@ -26,13 +26,18 @@ def test_the_iteration_cap_defaults_to_the_solver_default():
 def test_the_result_pane_reports_iterations_and_warns_on_cut_off():
     at = _app()
     at.checkbox(key="two_phase_on").set_value(False)
+    # pin the growth constant: the convergence test is "first iteration whose
+    # relative tau change is below tol", so with c_skin = 0 (no skin, tau
+    # unchanged) even one iteration would count as converged. At c_skin = 1 on
+    # the default plate the first iteration moves tau far more than 1e-3.
+    (c_skin,) = [s for s in at.slider if str(s.label).startswith("スキン層成長定数")]
+    c_skin.set_value(1.0)
     _iter_slider(at).set_value(1).run()
     at.button[0].click().run()
     assert not at.exception
     md = at.session_state["mfs_result"].metadata
     text = _texts(at)
     assert f"反復={md['skin_iterations']}, 収束={md['skin_converged']}" in text
-    # one iteration of a coupled tau <-> skin loop cannot have met the tolerance
     assert md["skin_converged"] is False and not md.get("no_flow")
     assert "反復が上限で打ち切られた" in text
     # a converged run carries no warning
