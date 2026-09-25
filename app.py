@@ -121,9 +121,17 @@ with st.expander("📐 使用している方程式と適用範囲"):
     st.latex(r"-\,\nabla \cdot \left( S\, \nabla \tau \right) = 1 \quad \text{in cavity}")
     st.markdown(
         "- ゲートで $\\tau = 0$（ディリクレ境界）、キャビティ壁で no-flux（ノイマン境界）\n"
-        "- 解いた $\\tau$ を最大値で正規化し、絶対時間に換算: "
-        r"$t_{\text{fill}}(x,y) = \dfrac{\tau(x,y)}{\tau_{\max}} \cdot T_{\text{fill}}$"
-        "\n- $T_{\\text{fill}} = V_{\\text{cavity}} / Q$（射出率一定）\n"
+        "- 解いた $\\tau$ は**順序**だけを使い、絶対時間は体積 CDF 写像で与える（v0.25.0）: "
+        "セルの充填時刻 ＝ 総充填時間 × （そのセル以下の $\\tau$ を持つセル群の体積 / 解いた領域の体積）。"
+        "定率射出なら先端は注入体積に比例して進むので、順序を体積で刻むのが物理そのもの\n"
+        r"$t_{\text{fill}}(\mathbf{x}) = T_{\text{fill}} \cdot \dfrac{V(\tau \le \tau(\mathbf{x}))}{V_{\text{solved}}}$"
+        "\n- $V_{\\text{solved}}$ は充填可能なセルの体積。封止で切られた未充填セルは含まないので、"
+        "ショートショット時は最後に届くセルが $T_{\\text{fill}}$ を持つ\n"
+        "- $T_{\\text{fill}} = V_{\\text{solved}} / Q$ は**定率射出・圧縮なし**のとき"
+        "（壁面冷却なし、またはスキン層の「速度制御」時計）。"
+        "射出圧縮 ON なら §7 の等価モデルで短縮され、スキン層の「圧力一定」時計と層別の熱結合は"
+        "体積重み付き $\\tau$ の比（抵抗比）で再スケールする — スキン層は膨張のみ、層別は層の粘度分布"
+        "次第で 1 を挟んでどちらにも動く（そのとき $t_{\\text{fill}}$ は $V/Q$ で割った値ではない）\n"
         "- 多段射出（実機条件モードで段数 2 以上）では $Q$ が段ごとに変わるので、"
         "体積 → 時刻の写像が段の切替体積で折れる区分線形になる。"
         "各段の注入体積 $\\pi D^2/4 \\cdot L_i$ は速度によらずストロークだけで決まるので、"
@@ -163,7 +171,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- スキンが出会う年齢 $t_c$ に役務が届いたセル＝**封止**（充填後に閉じた、赤マーク）。閉じた後に届くセルは**未充填**（充填時間なし）"
     )
 
-    st.markdown("### 5. 壁面冷却モデル B：層別 N 層離散化（推奨・極薄向け既定）")
+    st.markdown("### 5. 壁面冷却モデル B：層別 N 層離散化（選択式。二相モデルとは併用不可）")
     st.markdown(
         "厚み方向を $N$ 層に離散化し、**各層に固有の温度・粘度・剪断速度** を持たせる。"
         "スキン層モデルが「壁面凍結フロント」しか扱わないのに対し、こちらは**コア内部の温度・粘度プロファイル**"
@@ -749,7 +757,7 @@ with st.sidebar:
         #   反復上限: 12 (収束が遅くなりがちなので上限緩め)
         skin_on = wall_model == "skin"
         c_skin = 0.0
-        skin_max_iter = 5
+        skin_max_iter = 20
         skin_tol = 1e-3
         skin_clock_mode = "constant_pressure"
         multilayer_on = wall_model == "multilayer"
@@ -771,9 +779,14 @@ with st.sidebar:
             skin_max_iter = st.slider(
                 "fixed-point 反復上限",
                 1,
-                10,
-                5,
-                help="τ ↔ h_core 結合の反復回数。3〜5で十分なケースが多い。",
+                40,
+                20,
+                help=(
+                    "τ ↔ h_core 結合の反復回数。ソルバ既定と同じ 20。圧力一定時計では封止が"
+                    "雪崩（スキン↑→抵抗↑→T_fill↑→スキン↑）になることがあり、途中で打ち切ると"
+                    "半分凍った絵が収束したように見える（sim v0.39.0）。"
+                    "未収束なら結果ペインに警告が出る。"
+                ),
             )
             skin_tol_log10 = st.slider(
                 "収束判定 log10(tol)",
@@ -1737,6 +1750,25 @@ if "mfs_result" in st.session_state:
 
         if skin_path is not None and core_path is not None:
             with st.expander("スキン層 / コア層 / ショートショット"):
+                md = result.metadata
+                st.caption(
+                    f"反復={md.get('skin_iterations')}, 収束={md.get('skin_converged')}, "
+                    f"T_fill_inflation={md.get('T_fill_inflation', 1.0):.3f}, "
+                    f"封止セル={md.get('short_shot_cells', 0)}, "
+                    f"未充填セル={md.get('unfillable_cells', 0)}"
+                )
+                if md.get("skin_converged") is False:
+                    if md.get("no_flow"):
+                        st.info(
+                            "ゲート以外の流路が全て封止した状態で終了（反復の打ち切りではない）。"
+                            "これ以上反復しても場は変わらないので、この表示が最終解。"
+                        )
+                    else:
+                        st.warning(
+                            "スキン層の fixed-point 反復が上限で打ち切られた。表示は途中状態で、"
+                            "封止・未充填が実際より少なく見えることがある。反復上限を上げるか、"
+                            "時計を「速度制御」にして再実行を。"
+                        )
                 st.image(str(skin_path))
                 st.caption("スキン層厚さ s(x,y) [mm]。流動が遅いほど・薄肉ほど s が大きい。")
                 _download("⬇ スキン層 PNGをダウンロード", skin_path, "image/png", "dl_skin_png")

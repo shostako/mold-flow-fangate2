@@ -25,6 +25,10 @@
   スキン層の時計の UI 既定も `constant_rate`（速度制御）に変えた（ライブラリ既定は `constant_pressure` のまま）
 - `tests/test_injection_ui.py` の期待既定値は先頭の定数ブロック（`DEF_METER` / `DEF_SWITCHES` 等）1 箇所に集約してある。
   sim / fangate と共有するファイルなので、値を変えるときは `app.py` の定数と両方を直す
+- sim v0.39.0 の取り込み（v0.5.0）: スキン層の反復上限 1〜40・既定 20、結果ペインに反復数・収束・未収束警告、
+  式解説 §2 を体積 CDF 写像に。**既定形状は圧力一定時計だと 37 反復でやっと収束し、封止がキャビティの 25%**
+  （反復 5 の「封止 0」は打ち切りの産物）。速度制御時計（UI 既定）は 2 反復で収束・封止 0。2 つの時計は別の絵を出す
+- sim との core 差分はロジック無し（`_restricted_to` の `product_mask` 引き継ぎだけ本リポが先行。sim へ逆移植の候補）
 - 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest`
 - Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期
