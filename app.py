@@ -779,12 +779,13 @@ with st.sidebar:
             skin_max_iter = st.slider(
                 "fixed-point 反復上限",
                 1,
-                40,
+                100,
                 20,
                 help=(
                     "τ ↔ h_core 結合の反復回数。ソルバ既定と同じ 20。圧力一定時計では封止が"
                     "雪崩（スキン↑→抵抗↑→T_fill↑→スキン↑）になることがあり、途中で打ち切ると"
-                    "半分凍った絵が収束したように見える（sim v0.39.0）。"
+                    "半分凍った絵が収束したように見える（sim v0.39.0）。この金型の既定形状は"
+                    "圧力一定時計だと 80 で収束、速度制御時計なら数回で収束する。"
                     "未収束なら結果ペインに警告が出る。"
                 ),
             )
@@ -1098,6 +1099,39 @@ with st.sidebar:
 
 
 # ----------------------- main panel -----------------------
+
+
+def _fixed_point_warning(
+    md: dict,
+    *,
+    converged_key: str,
+    what: str,
+    advice: str,
+    no_flow_key: str | None = "no_flow",
+) -> bool:
+    """Warn when a fixed-point loop recorded in ``md`` was cut off.
+
+    A truncated loop draws a half-frozen field that looks converged (sim
+    v0.39.0), so the warning goes wherever the numbers are read, not only
+    inside a collapsed expander. ``no_flow`` (every path but the gate sealed)
+    is the loop's terminal state, not a cut-off. Returns True when something
+    was shown."""
+    if md.get(converged_key) is not False:
+        return False
+    if no_flow_key and md.get(no_flow_key):
+        st.info(
+            f"{what}: ゲート以外の流路が全て封止した状態で終了（反復の打ち切りではない）。"
+            "これ以上反復しても場は変わらないので、この表示が最終解。"
+        )
+    else:
+        st.warning(
+            f"{what}の fixed-point 反復が上限で打ち切られた。表示は途中状態で、"
+            f"封止・未充填が実際より少なく見えることがある。{advice}"
+        )
+    return True
+
+
+_SKIN_ADVICE = "反復上限を上げるか、時計を「速度制御」にして再実行を。"
 
 
 col_left, col_right = st.columns([1, 1.3])
@@ -1587,6 +1621,23 @@ if "mfs_result" in st.session_state:
         c1.metric("総充填時間 T_fill", f"{result.total_fill_time_s:.3f} s")
         c2.metric("代表粘度 η_eff", f"{result.viscosity_Pa_s:.1f} Pa·s")
         c3.metric("キャビティ体積", f"{geom.volume_cm3():.2f} cm³")
+        # A cut-off loop makes the headline T_fill and every map below it a
+        # snapshot; say so here, next to the number, not only in an expander
+        _fixed_point_warning(
+            result.metadata, converged_key="skin_converged", what="スキン層", advice=_SKIN_ADVICE
+        )
+        _fixed_point_warning(
+            result.metadata,
+            converged_key="multilayer_converged",
+            what="層別モデル",
+            advice="反復上限を上げて再実行を。",
+            no_flow_key=None,
+        )
+        if result.metadata.get("domain_converged") is False:
+            st.warning(
+                "封止で切れたセルを外す領域の絞り込み（二分探索）が上限回数で打ち切られた。"
+                "充填可能な領域が確定していないので、封止・未充填の数は目安。"
+            )
         # Read the run's own record, not the sidebar: the pane also renders
         # from a cached result, and the sidebar may have moved since.
         _prof_rec = result.metadata.get("injection_profile")
@@ -1676,10 +1727,19 @@ if "mfs_result" in st.session_state:
                 if md2.get("skin_layer_enabled"):
                     st.caption(
                         "スキン層を射出相に乗せた結果（時計は計量 V/Q 固定）: "
+                        f"反復={md2.get('skin_iterations')}, 収束={md2.get('skin_converged')}, "
                         f"射出終了時のスキン最大 {md2.get('injection_skin_max_mm', 0.0):.3f} mm、"
                         f"封止 {md2.get('injection_sealed_cells', 0)} セル、"
                         f"封止で届かず {md2.get('injection_unfillable_cells', 0)} セル。"
                         "圧縮相は等温（プールは等圧ソースなので内部のスキンは前進に効かない）。"
+                    )
+                    # the injection phase's own fixed-point loop, same cap as the main solve
+                    _fixed_point_warning(
+                        md2,
+                        converged_key="skin_converged",
+                        what="二相の射出相のスキン層",
+                        advice="反復上限を上げて再実行を。",
+                        no_flow_key=None,
                     )
                     if md2.get("injection_sealed_cells", 0) > 0:
                         _short = md2["shot_volume_cm3"] - md2["achieved_volume_final_cm3"]
@@ -1759,19 +1819,8 @@ if "mfs_result" in st.session_state:
                     f"T_fill_inflation={md.get('T_fill_inflation', 1.0):.3f}, "
                     f"封止セル={md.get('short_shot_cells', 0)}, "
                     f"未充填セル={md.get('unfillable_cells', 0)}"
+                    "（未収束の警告は結果ペインの先頭）"
                 )
-                if md.get("skin_converged") is False:
-                    if md.get("no_flow"):
-                        st.info(
-                            "ゲート以外の流路が全て封止した状態で終了（反復の打ち切りではない）。"
-                            "これ以上反復しても場は変わらないので、この表示が最終解。"
-                        )
-                    else:
-                        st.warning(
-                            "スキン層の fixed-point 反復が上限で打ち切られた。表示は途中状態で、"
-                            "封止・未充填が実際より少なく見えることがある。反復上限を上げるか、"
-                            "時計を「速度制御」にして再実行を。"
-                        )
                 st.image(str(skin_path))
                 st.caption("スキン層厚さ s(x,y) [mm]。流動が遅いほど・薄肉ほど s が大きい。")
                 _download("⬇ スキン層 PNGをダウンロード", skin_path, "image/png", "dl_skin_png")
