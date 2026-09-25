@@ -31,7 +31,7 @@
   領域パスの候補が同じ予算で解かれるため）。速度制御時計（UI 既定）は 2 反復で収束・封止 0。2 つの時計は別の絵を出す。
   途中候補の打ち切りが黙る件は Issue #10
 - sim との core 差分はロジック無し（`_restricted_to` の `product_mask` 引き継ぎだけ本リポが先行。sim へ逆移植の候補）
-- 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest`
+- 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest -n auto --dist loadscope`（CI と同じ。直列だと 8 分、4 並列で 5 分半）
 - Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期
 

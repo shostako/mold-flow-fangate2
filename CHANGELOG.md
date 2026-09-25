@@ -3,6 +3,14 @@
 [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) 準拠、[セマンティック バージョニング](https://semver.org/lang/ja/) に従う。
 `0.x` 系のため、マイナー版の更新に後方非互換の変更を含むことがある。
 
+## [Unreleased]
+
+### CI
+
+- pytest を pytest-xdist で並列化（`-n auto --dist loadscope`、sim 5cf0965 の横展開）。ローカル実測 8 分 03 秒 → 4 並列で
+  5 分 31 秒。`loadscope` はモジュール単位で配るのでモジュールスコープのフィクスチャ（既定形状の解）が worker ごとに
+  1 回で済む。`pytest-xdist` を dev 依存に追加（`uv pip install -e ".[dev]"` で入る）
+
 ## [0.5.0] — 2026-09-26
 
 **sim v0.39.0（PR #81）の未移植分を取り込んだ: スキン層の反復上限と収束の報告。** fangate v0.7.2 は既定値

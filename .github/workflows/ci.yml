@@ -46,4 +46,9 @@ jobs:
       - name: Pytest
         env:
           MPLBACKEND: Agg
-        run: pytest tests/ -v --color=yes
+        # xdist (sim 5cf0965): the suite is dominated by AppTest cases (~30 s
+        # each, 60+ of them). loadscope hands out whole modules so each
+        # module-scoped fixture (a solved default geometry) runs once instead
+        # of once per worker. Measured locally on this repo: 8m03 serial ->
+        # 5m31 with 4 workers.
+        run: pytest tests/ -v --color=yes -n auto --dist loadscope
