@@ -15,6 +15,9 @@
   `self_consistent_shear_heating`、セルごとの 1 変数方程式。根は 1 つ）。判定 `convergence_tol` は変えていない。収束先は元の式の固定点。
 - `cross_wlf_viscosity`: 冷えた層で途中の値があふれて NaN や 0 を返していたのを、あふれる要素だけ対数で評価して有限値か inf（凍結）にした。通常域はビット不変。
 - 層別の粘度マップの対数目盛りの上端を 1e100 で頭打ち（凍結の手前で matplotlib が落ちていた）。式解説の剪断発熱の記述を更新。
+- 層別の粘度マップ: 有限の値が全部 1e100 以上（または一様）の層で、対数目盛りの上下端が同じ値に潰れ、最下色で描かれていた。
+  上端の 1 桁下を下端にして最上色で描く（グリッド版の `vmax + 1.0` は 1e100 では効かない）。凍結（inf）は従来どおり白抜き
+  （Codex P2 on #15。sim にも同じパッチを出す）。
 - 共有ファイル `core/multilayer_solver.py`・`core/multilayer_thermal.py`・`core/materials.py`・`core/two_phase.py` は sim v0.60.0 と一致
   （materials.json のパスの行とコメント 1 行だけ違う）。sim のテスト（`test_multilayer_solver.py`・`test_multilayer_thermal.py`・
   `test_smoke.py`・`test_visualizer_layer.py` の追加分）もそのまま持ち込んだ。
