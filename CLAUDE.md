@@ -31,13 +31,19 @@
   領域パスの候補が同じ予算で解かれるため）。速度制御時計（UI 既定）は 2 反復で収束・封止 0。2 つの時計は別の絵を出す。
   途中候補の打ち切りが黙る件は Issue #10
 - sim との core 差分はロジック無し（`_restricted_to` の `product_mask` 引き継ぎだけ本リポが先行。sim へ逆移植の候補）
+- ゲート形状の選択（v0.7.0）: `runner_shape` が `"triangle"`＝Gate 1（客先図面）／`"pentagon"`＝Gate 2（五角形、既定は
+  `GATE2_DEFAULTS`）。Gate 2 は側辺 `side_len_mm`（**額縁の下端から測る**。額縁込みは 20 + 入力）＋ R12 に接する斜辺。
+  肉厚の規則（エッジ帯の肉厚・幅、傾斜の有無と開始位置、円の外の肉厚 t_o、円の深さ）は両方の形で共通。
+  **Gate 1 の既定は v0.5.0 とビット一致**（`tests/test_geometry_gate2.py` の指紋。新しい変数の既定が従来の規則そのもの）。
+  Gate 2 の図面は `docs/draft/gate2_drawing.pdf`（`gate2_drawing.py` が builder から描く）。UI の Gate 2 専用ウィジェットは
+  `fg_side_len_mm` / `fg_g2_*`、Gate 1 の円の深さは `fg_g1_*`
 - 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest -n auto --dist loadscope`（CI と同じ。直列だと 8 分、4 並列で 5 分半）
 - Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期
 
 ## fangate から持ち込まなかったもの
 `core/fan_gate.py`（旧ゲート／ウイング／タブ／井戸／スプルーブッシュ込みの builder）と `test_geometry_fan_gate`。
-UI のゲート形状 radio・タブ・井戸／スプルーの expander。
+UI のゲート形状 radio（fangate の旧／ウイング。本リポの Gate 1／Gate 2 の選択は v0.7.0 で別に作った）・タブ・井戸／スプルーの expander。
 
 ## builder の設計メモ
 - 座標は fangate と同じ格子系（ランナが下、製品が上、y は上向き）。`display_origin_mm()` で製品エッジ y=0

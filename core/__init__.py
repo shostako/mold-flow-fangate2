@@ -1,6 +1,11 @@
 """mold-flow-fangate2 core package."""
 
-from .fan_runner import FanRunnerPlateConfig, build_fan_runner_plate_geometry
+from .fan_runner import (
+    GATE2_DEFAULTS,
+    RUNNER_SHAPES,
+    FanRunnerPlateConfig,
+    build_fan_runner_plate_geometry,
+)
 from .fill_player import (
     CONTROLS_HEIGHT_PX,
     build_fill_player_html,
@@ -34,6 +39,8 @@ __all__ = [
     "Geometry",
     "build_demo_geometry",
     "FanRunnerPlateConfig",
+    "GATE2_DEFAULTS",
+    "RUNNER_SHAPES",
     "build_fan_runner_plate_geometry",
     "HeleShawSolver",
     "MultilayerHeleShawSolver",

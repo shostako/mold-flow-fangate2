@@ -20,6 +20,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from core import (
+    GATE2_DEFAULTS,
+    RUNNER_SHAPES,
     FanRunnerPlateConfig,
     HeleShawSolver,
     MaterialDB,
@@ -89,7 +91,7 @@ st.set_page_config(page_title="12.3 インチ 額縁プレート 流動解析", 
 st.title("12.3 インチ 額縁プレート 流動解析")
 st.caption(
     "12.3 インチ 額縁肉厚プレート（外周 20 幅 t1.0／内側 t4.0、圧縮は内側だけ）をホットランナーゲート φ3 →"
-    "ファン状ランナ（幅 300、R12 丸端、肉厚 1.0 → 2.5）で射出圧縮成形するときの樹脂流動を簡易解析するツール。"
+    "ランナ（幅 300、R12 丸端。Gate 1 逆三角形／Gate 2 五角形）で射出圧縮成形するときの樹脂流動を簡易解析するツール。"
     "ランナ寸法・肉盗み・圧縮条件の方向性検討を、実機評価前の初期検討段階で迅速に行うことを目的とする。"
     "商用 CAE（Moldflow 等）の代替を意図したものではない。"
 )
@@ -287,7 +289,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
     st.markdown(
         "- 薄板キャビティ内の 2D 流動（局所剪断と局所抵抗の効果）\n"
         "- 樹脂物性（密度・比熱・熱拡散率 → 熱伝導率派生・Cross-WLF 粘度パラメータ）\n"
-        "- 額縁プレートの 2 段肉厚、ファン状ランナ（幅・フランク角・R 丸端・深さ方向の肉厚プロファイル）、肉盗み（▽）\n"
+        "- 額縁プレートの 2 段肉厚、ランナ（Gate 1 逆三角形／Gate 2 五角形。幅・R 丸端・深さ方向の肉厚プロファイル）、肉盗み（▽）\n"
         "- 流動先端の到達順、ウェルドライン、エアトラップ\n"
         "- 圧力分布の相対値（ゲート＝1、最終充填点＝0 の正規化）\n"
         "- 充填時間（射出率 $Q$ から逆算した絶対時間）\n"
@@ -310,7 +312,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- **層内対流項**: 1D Neumann は純粋拡散のみ（薄板では妥当な近似だが、極厚 $h > 4$ mm では破綻）\n"
         "- **ベント・脱気挙動**: エアトラップ位置は予測するが圧抜けは考慮しない\n"
         "- **ホットランナー／ゲートの圧損**: ゲート φ3 の円を射出点として扱い、ノズル・ゲートの縦方向抵抗は入っていない\n"
-        "- **STL/STEP 直接読み込み**: パラメトリック形状（額縁プレート＋ファン状ランナ）のみ\n"
+        "- **STL/STEP 直接読み込み**: パラメトリック形状（額縁プレート＋ランナ 2 種）のみ\n"
         "- **非構造格子・中立面メッシュ**: 構造格子（正方形セル）固定\n"
         "- **絶対圧力場の出力**: 圧力は正規化値（ゲート=1 / フロント=0）のみ。"
         "実機の必要型締力評価には未対応"
@@ -348,7 +350,12 @@ material_keys = list(db.keys())
 
 
 # ----------------------- fan-runner plate: parametric inputs -----------------------
-_D = FanRunnerPlateConfig()  # the drawing (docs/spec.md)
+_D = FanRunnerPlateConfig()  # Gate 1 = the drawing (docs/spec.md)
+_D2 = FanRunnerPlateConfig(**GATE2_DEFAULTS)  # Gate 2 = the pentagon (docs/spec.md)
+_SHAPE_LABELS = {
+    "triangle": "Gate 1（逆三角形・客先図面）",
+    "pentagon": "Gate 2（五角形・側辺つき）",
+}
 
 
 def _fan_runner_sidebar() -> dict:
@@ -370,6 +377,16 @@ def _fan_runner_sidebar() -> dict:
             key=f"fg_{field}",
         )
 
+    v["runner_shape"] = st.radio(
+        "ゲート形状",
+        RUNNER_SHAPES,
+        format_func=_SHAPE_LABELS.__getitem__,
+        key="fg_runner_shape",
+        help="Gate 1 は客先図面の逆三角形（フランク 14°）。Gate 2 は製品エッジの両端から側辺を"
+        "下ろし、斜辺を丸端の円に接して結ぶ五角形。肉厚の決め方（エッジ帯・傾斜・円の外・円の中）"
+        "と肉盗みは両方で共通。",
+    )
+    gate2 = v["runner_shape"] == "pentagon"
     with st.expander("製品（額縁プレート）", expanded=False):
         st.caption("圧縮されるのは内側の厚肉部だけ。額縁とランナは固定。")
         num("plate_w_mm", "製品幅（長辺、ランナ側）[mm]", 50.0, 600.0, 1.0)
@@ -377,24 +394,140 @@ def _fan_runner_sidebar() -> dict:
         num("frame_w_mm", "額縁幅 [mm]", 0.0, 100.0, 0.5, fmt="%.1f")
         num("frame_thk_mm", "額縁肉厚 [mm]", 0.1, 10.0, 0.05)
         num("inner_thk_mm", "内側肉厚（圧縮部）[mm]", 0.1, 10.0, 0.05)
-    with st.expander("ランナ（ファン状、製品エッジ直結）", expanded=False):
+    with st.expander("ゲートブロック（ランナ、製品エッジ直結）", expanded=False):
         num("runner_w_mm", "ランナ幅（製品エッジ）[mm]", 5.0, 600.0, 1.0, fmt="%.1f")
-        num("fan_flank_deg", "フランク角（製品エッジ線に対して）[deg]", 1.0, 89.0, 0.5, fmt="%.1f")
+        if gate2:
+            v["fan_flank_deg"] = float(_D.fan_flank_deg)
+            v["side_len_mm"] = st.number_input(
+                "側辺の長さ（額縁の下端＝製品エッジから）[mm]",
+                min_value=0.0,
+                max_value=300.0,
+                value=float(_D2.side_len_mm),
+                step=1.0,
+                format="%.1f",
+                key="fg_side_len_mm",
+            )
+        else:
+            num(
+                "fan_flank_deg",
+                "フランク角（製品エッジ線に対して）[deg]",
+                1.0,
+                89.0,
+                0.5,
+                fmt="%.1f",
+            )
+            v["side_len_mm"] = float(_D.side_len_mm)
         num("runner_len_mm", "ランナ長（製品エッジ → ゲート軸）[mm]", 1.0, 300.0, 1.0, fmt="%.1f")
         num("runner_end_d_mm", "丸端の径 φ（ゲート軸中心）[mm]", 1.0, 200.0, 1.0, fmt="%.1f")
-        _apex = FanRunnerPlateConfig(
-            runner_w_mm=v["runner_w_mm"], fan_flank_deg=v["fan_flank_deg"]
-        ).apex_depth_mm
-        st.caption(
-            f"フランクの延長が軸で交わる深さ {_apex:.1f} mm（丸端の上端 "
-            f"{v['runner_len_mm'] - v['runner_end_d_mm'] / 2:.1f} mm より深いこと）。"
-            "図面ではフランクが丸端の円に交差する（接線ではない）。"
-        )
+        r_top = v["runner_len_mm"] - v["runner_end_d_mm"] / 2
+        if gate2:
+            _g2 = FanRunnerPlateConfig(
+                runner_shape="pentagon",
+                runner_w_mm=v["runner_w_mm"],
+                side_len_mm=v["side_len_mm"],
+                runner_len_mm=v["runner_len_mm"],
+                runner_end_d_mm=v["runner_end_d_mm"],
+            )
+            _cap = (
+                f"額縁込みの側辺 h = {v['frame_w_mm'] + v['side_len_mm']:.1f} mm"
+                f"（額縁 {v['frame_w_mm']:.1f} ＋ 側辺 {v['side_len_mm']:.1f}）。"
+            )
+            try:
+                _g2.validate()
+            except ValueError:
+                pass  # the builder reports it; the caption only adds numbers when they exist
+            else:
+                _xt, _dt = _g2.pentagon_tangent_mm
+                _cap += (
+                    f"斜辺は丸端の円に接する（傾き {_g2.pentagon_slant_deg:.1f}°、接点は軸から "
+                    f"±{_xt:.1f} mm・深さ {_dt:.1f} mm）。側辺は丸端の下端 "
+                    f"{v['runner_len_mm'] + v['runner_end_d_mm'] / 2:.1f} mm より浅いこと。"
+                )
+            st.caption(_cap)
+        else:
+            _apex = FanRunnerPlateConfig(
+                runner_w_mm=v["runner_w_mm"], fan_flank_deg=v["fan_flank_deg"]
+            ).apex_depth_mm
+            st.caption(
+                f"フランクの延長が軸で交わる深さ {_apex:.1f} mm（丸端の上端 "
+                f"{r_top:.1f} mm より深いこと）。"
+                "図面ではフランクが丸端の円に交差する（接線ではない）。"
+            )
         st.markdown("**肉厚（製品エッジからの深さで決まる）**")
-        num("runner_edge_thk_mm", "エッジ帯の肉厚（額縁と同厚）[mm]", 0.05, 10.0, 0.05)
-        num("runner_edge_flat_mm", "エッジ帯の長さ [mm]", 0.0, 50.0, 0.5, fmt="%.1f")
-        num("runner_ramp_end_mm", "傾斜の終端深さ [mm]", 0.0, 300.0, 1.0, fmt="%.1f")
-        num("runner_thk_mm", "ランナ肉厚（傾斜終端 → 丸端）[mm]", 0.1, 10.0, 0.05)
+        num("runner_edge_thk_mm", "エッジ帯の肉厚 [mm]", 0.05, 10.0, 0.05)
+        num(
+            "runner_edge_flat_mm",
+            "エッジ帯の幅（製品エッジから。0 で帯なし）[mm]",
+            0.0,
+            50.0,
+            0.5,
+            fmt="%.1f",
+        )
+        v["runner_ramp_on"] = st.checkbox(
+            "傾斜を付ける（エッジ帯の肉厚 → 円の外の肉厚 t_o）",
+            value=_D.runner_ramp_on,
+            key="fg_runner_ramp_on",
+            help="外すと、エッジ帯の先で段差になって t_o に上がる。エッジ帯の幅が 0 なら製品エッジから t_o。",
+        )
+        if not v["runner_ramp_on"]:
+            v["runner_ramp_end_mm"] = (_D2 if gate2 else _D).runner_ramp_end_mm
+        elif gate2:
+            follow = st.checkbox(
+                "傾斜の開始位置を丸端の円の上端に合わせる",
+                value=True,
+                key="fg_g2_ramp_at_end_top",
+                help="ランナ長と丸端の径を変えると開始位置も動く。外すと深さを数値で指定する。",
+            )
+            if follow:
+                v["runner_ramp_end_mm"] = None
+                st.caption(f"傾斜の開始位置（下限）= {r_top:.1f} mm（丸端の円の上端）")
+            else:
+                v["runner_ramp_end_mm"] = st.number_input(
+                    "傾斜の開始位置（下限、製品エッジからの深さ）[mm]",
+                    min_value=0.0,
+                    max_value=300.0,
+                    value=float(max(r_top, 0.0)),
+                    step=1.0,
+                    format="%.1f",
+                    key="fg_g2_runner_ramp_end_mm",
+                )
+        else:
+            num(
+                "runner_ramp_end_mm",
+                "傾斜の開始位置（下限、製品エッジからの深さ）[mm]",
+                0.0,
+                300.0,
+                1.0,
+                fmt="%.1f",
+            )
+        num("runner_thk_mm", "円の外の肉厚 t_o（傾斜ありは厚い側）[mm]", 0.1, 10.0, 0.05)
+        if gate2:
+            v["runner_end_thk_mm"] = st.number_input(
+                "円の深さ（丸端の円の中の肉厚）[mm]",
+                min_value=0.1,
+                max_value=10.0,
+                value=float(_D2.runner_end_thk_mm),
+                step=0.05,
+                format="%.2f",
+                key="fg_g2_runner_end_thk_mm",
+            )
+        elif st.checkbox(
+            "丸端の円の中を別の肉厚にする",
+            value=False,
+            key="fg_g1_end_thk_on",
+            help="外したままなら、円の中も上の深さの決め方に従う（客先図面のとおり）。",
+        ):
+            v["runner_end_thk_mm"] = st.number_input(
+                "円の深さ（丸端の円の中の肉厚）[mm]",
+                min_value=0.1,
+                max_value=10.0,
+                value=float(_D2.runner_end_thk_mm),
+                step=0.05,
+                format="%.2f",
+                key="fg_g1_runner_end_thk_mm",
+            )
+        else:
+            v["runner_end_thk_mm"] = None
         num("gate_d_mm", "ゲート径 φ（ホットランナー、射出点）[mm]", 0.5, 50.0, 0.5, fmt="%.1f")
     with st.expander("肉盗み（▽ フローバランサー）", expanded=False):
         v["balancer_on"] = st.checkbox(
