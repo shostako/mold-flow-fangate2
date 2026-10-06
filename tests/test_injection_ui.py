@@ -6,6 +6,11 @@ really reaches the solver, the direct-rate path still exists and still wins
 when chosen, the stage widgets appear only when asked for, and an impossible
 condition stops the run with a message instead of an exception.
 
+The page opens on the layered wall model (sim v0.50.0, fangate2 v0.8.0).
+``_app()`` therefore pins the machine condition and the skin wall model --
+the setting every test below was written against (the skin clock radio only
+exists under the skin model); ``_page_as_opened()`` is the untouched page.
+
 **The expected defaults live in one block below.** This file is shared with
 the sibling repos (mold-flow-fangate / -fangate2), which run the same machine
 on much larger parts and therefore meter a much longer stroke; porting the
@@ -48,8 +53,17 @@ def _expected_switch(i: int) -> float:
     return DEF_SWITCHES[i] if i < len(DEF_SWITCHES) else _even_switch(i, DEF_STAGES)
 
 
-def _app(timeout: float = 240.0) -> AppTest:
+def _page_as_opened(timeout: float = 240.0) -> AppTest:
     at = AppTest.from_file(str(APP), default_timeout=timeout)
+    at.run()
+    return at
+
+
+def _app(timeout: float = 240.0) -> AppTest:
+    """The page on the machine condition with the skin wall model."""
+    at = _page_as_opened(timeout)
+    at.radio(key="inj_mode").set_value("machine")
+    at.radio(key="wall_model").set_value("skin")
     at.run()
     return at
 
@@ -74,7 +88,7 @@ def _errors(at: AppTest) -> str:
 
 
 def test_default_is_the_machine_condition_with_the_documented_numbers():
-    at = _app()
+    at = _page_as_opened()
     assert at.radio(key="inj_mode").value == "machine"
     assert at.number_input(key="inj_screw_d").value == DEF_SCREW_D
     assert at.number_input(key="inj_meter_pos").value == DEF_METER
