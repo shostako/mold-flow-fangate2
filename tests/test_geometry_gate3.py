@@ -123,6 +123,37 @@ def test_balancer_still_cuts_through_gate3():
     assert cut.thickness_mm.sum() < plain.thickness_mm.sum()
 
 
+def test_balancer_cuts_the_arms_where_they_overlap():
+    """The balancer comes after the arms: where the two overlap the cut wins
+    (arms applied after it would fill the cut back in; @claude on PR #14).
+    A full-width balancer (w 300, h 15) reaches the arms near the edge."""
+    kw = dict(GATE3_DEFAULTS, balancer_on=True, balancer_w_mm=300.0, balancer_h_mm=15.0)
+    cfg = FanRunnerPlateConfig(**kw, cell_size_mm=DX)
+    g = build_fan_runner_plate_geometry(cfg)
+    x, d = _grid(g)
+    runner = _runner(g)
+    dist = _dist_to_flank(cfg, x, d)
+    in_arm = runner & (d > cfg.runner_edge_flat_mm + DX) & (dist < cfg.arm_w_mm - DX)
+    in_bal = (d < cfg.balancer_h_mm - DX) & (
+        np.abs(x) < 0.5 * cfg.balancer_w_mm * (1 - d / cfg.balancer_h_mm) - DX
+    )
+    both = in_arm & in_bal
+    assert both.sum() > 50
+    np.testing.assert_array_equal(g.thickness_mm[both], cfg.balancer_thk_mm)
+
+
+def test_arms_start_right_below_the_edge_when_there_is_no_band():
+    cfg = FanRunnerPlateConfig(
+        **GATE3_DEFAULTS, cell_size_mm=DX, runner_edge_flat_mm=0.0, runner_ramp_end_mm=20.0
+    )
+    g = build_fan_runner_plate_geometry(cfg)
+    x, d = _grid(g)
+    dist = _dist_to_flank(cfg, x, d)
+    first_row = _runner(g) & (d > 0) & (d < DX) & (dist < cfg.arm_w_mm - DX)
+    assert first_row.sum() > 10
+    np.testing.assert_array_equal(g.thickness_mm[first_row], cfg.arm_thk_mm)
+
+
 @pytest.mark.parametrize(
     "overrides, match",
     [
