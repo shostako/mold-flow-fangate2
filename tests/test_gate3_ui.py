@@ -30,6 +30,8 @@ def test_gate3_shows_the_arms_on_top_of_gate1_and_records_them():
     assert {"fg_fan_flank_deg", "fg_runner_ramp_end_mm", "fg_g1_end_thk_on"} <= keys
     assert "fg_side_len_mm" not in keys and not any(k.startswith("fg_g2_") for k in keys)
     assert at.number_input(key="fg_g3_arm_w_mm").value == 9.0
+    # the widest valid half-step: 150 · sin 14° = 36.29, so 36.0 (Codex P2 on PR #14)
+    assert at.number_input(key="fg_g3_arm_w_mm").max == 36.0
     assert at.number_input(key="fg_g3_arm_thk_mm").value == 3.5
     text = _texts(at)
     assert "36.3 mm 未満" in text
@@ -69,8 +71,10 @@ def test_arm_width_bound_follows_the_flank():
     assert not at.exception
     assert "75.0 mm 未満" in _texts(at)
     assert at.number_input(key="fg_g3_arm_w_mm").max == 74.5
-    at.number_input(key="fg_g3_arm_w_mm").set_value(60.0).run()
+    # the widget's own maximum must pass validate()
+    at.number_input(key="fg_g3_arm_w_mm").set_value(74.5).run()
     assert not at.exception
+    assert "形状パラメータが不正" not in _texts(at)
     # back to 14°: the bound shrinks under the entered width
     at.number_input(key="fg_fan_flank_deg").set_value(14.0).run()
     assert not at.exception

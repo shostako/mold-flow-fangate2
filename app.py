@@ -545,8 +545,10 @@ def _fan_runner_sidebar() -> dict:
             _w_sup = FanRunnerPlateConfig(
                 runner_w_mm=v["runner_w_mm"], fan_flank_deg=v["fan_flank_deg"]
             ).arm_w_sup_mm
-            # largest 0.5 step strictly below the bound (the 1e-6 absorbs sin(30°) = 0.4999…)
-            _w_hi = max(math.floor((_w_sup - 0.5) * 2.0 + 1e-6) / 2.0, 0.5)
+            # the largest 0.5 multiple that validate() accepts, i.e. strictly below
+            # the bound minus its 1e-6 tolerance: 36.29 → 36.0, 75.0 (sin 30°) → 74.5
+            # (Codex P2 on PR #14: flooring after subtracting a step lost 36.0)
+            _w_hi = max((math.ceil((_w_sup - 1e-6) * 2.0) - 1) / 2.0, 0.5)
             v["arm_w_mm"] = st.number_input(
                 "腕の幅（フランクから直角に測る）[mm]",
                 min_value=0.5,
