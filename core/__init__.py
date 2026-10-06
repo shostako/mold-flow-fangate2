@@ -2,6 +2,7 @@
 
 from .fan_runner import (
     GATE2_DEFAULTS,
+    GATE3_DEFAULTS,
     RUNNER_SHAPES,
     FanRunnerPlateConfig,
     build_fan_runner_plate_geometry,
@@ -40,6 +41,7 @@ __all__ = [
     "build_demo_geometry",
     "FanRunnerPlateConfig",
     "GATE2_DEFAULTS",
+    "GATE3_DEFAULTS",
     "RUNNER_SHAPES",
     "build_fan_runner_plate_geometry",
     "HeleShawSolver",

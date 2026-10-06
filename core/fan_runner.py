@@ -42,9 +42,19 @@ corner outside the disc and no deeper than the disc's bottom
 (``side_len ≤ runner_len + runner_end_d/2``; at equality the slants are
 level and the runner is a plain rectangle).
 
+**Gate 3** (``"triangle_arms"``, the 2026-10-06 proposal): Gate 1's
+silhouette and thickness, plus an **arm** along each flank — a groove
+``arm_w`` wide (measured square to the flank) cut to ``arm_thk``, from the end
+of the edge band to the round end. Inside the arm the thickness is
+``max(profile, arm_thk)`` (a groove only removes steel); the edge band and the
+round end keep their own thickness, so the gate's cut face at the product
+edge is unchanged. ``validate`` keeps the arms off the axis on the edge line
+(``arm_w < runner_w/2 · sin(flank)``) and requires ``arm_thk`` above the
+edge band so the groove is real.
+
 Runner thickness is a function of the depth ``d`` alone (the section is
-taken on the axis, the plan view has no other thickness lines), for both
-shapes: ``runner_edge_thk`` on the edge band ``d ≤ runner_edge_flat`` (the
+taken on the axis, the plan view has no other thickness lines), for every
+shape: ``runner_edge_thk`` on the edge band ``d ≤ runner_edge_flat`` (the
 band's width; 0 = no band), a linear ramp to ``runner_thk`` at
 ``d = runner_ramp_end`` (``None`` = the top of the round end), then
 ``runner_thk`` to the round end. ``runner_ramp_on = False`` drops the ramp:
@@ -83,8 +93,9 @@ from scipy import ndimage
 from .geometry import Geometry
 
 #: ``runner_shape`` values: Gate 1 = the customer drawing, Gate 2 = the
-#: pentagon with straight sides (2026-10-06)
-RUNNER_SHAPES = ("triangle", "pentagon")
+#: pentagon with straight sides (2026-10-06), Gate 3 = Gate 1 with a thick
+#: arm along each flank (2026-10-06)
+RUNNER_SHAPES = ("triangle", "pentagon", "triangle_arms")
 
 #: Gate 2 as drawn (``docs/spec.md``): on top of the shared defaults, the ramp
 #: ends at the top of the round end and the disc is 2.5 thick.
@@ -92,6 +103,12 @@ GATE2_DEFAULTS: dict = {
     "runner_shape": "pentagon",
     "runner_ramp_end_mm": None,
     "runner_end_thk_mm": 2.5,
+}
+
+#: Gate 3 as proposed: Gate 1 (the drawing) plus the arms at their field
+#: defaults (``arm_w_mm`` / ``arm_thk_mm``).
+GATE3_DEFAULTS: dict = {
+    "runner_shape": "triangle_arms",
 }
 
 
@@ -111,8 +128,11 @@ class FanRunnerPlateConfig:
     fan_flank_deg: float = 14.0  # flank angle to the product edge line
     runner_len_mm: float = 30.0  # product edge → sprue axis
     runner_end_d_mm: float = 24.0  # round end (R12) centred on the axis
-    runner_shape: str = "triangle"  # Gate 1 "triangle" / Gate 2 "pentagon"
+    runner_shape: str = "triangle"  # Gate 1 "triangle" / Gate 2 "pentagon" / Gate 3 "triangle_arms"
     side_len_mm: float = 28.0  # Gate 2: side length below the product edge (rim excluded)
+    # Gate 3: a groove along each flank (width square to the flank, thickness inside it)
+    arm_w_mm: float = 9.0
+    arm_thk_mm: float = 3.5
     # runner thickness profile by depth below the product edge
     runner_thk_mm: float = 2.5  # t_o: outside the round end (ramp end → bottom)
     runner_edge_thk_mm: float = 1.0  # on the edge band (= rim thickness)
@@ -205,6 +225,20 @@ class FanRunnerPlateConfig:
                 f"tan(fan_flank_deg)) which is above the round end's top "
                 f"({self.runner_len_mm - r_end}); the triangle must reach the disc"
             )
+        if self.runner_shape == "triangle_arms":
+            for name, val in (("arm_w_mm", self.arm_w_mm), ("arm_thk_mm", self.arm_thk_mm)):
+                if val <= 0:
+                    raise ValueError(f"{name} must be positive for Gate 3 (got {val})")
+            if self.arm_w_mm >= self.arm_w_sup_mm - eps:
+                raise ValueError(
+                    f"arm_w_mm ({self.arm_w_mm}) must be < runner_w_mm / 2 · sin(fan_flank_deg) "
+                    f"({self.arm_w_sup_mm:.2f}); wider arms would meet on the axis at the edge line"
+                )
+            if self.arm_thk_mm <= self.runner_edge_thk_mm + eps:
+                raise ValueError(
+                    f"arm_thk_mm ({self.arm_thk_mm}) must be > runner_edge_thk_mm "
+                    f"({self.runner_edge_thk_mm}); an arm is a groove, it only deepens the runner"
+                )
         if self.runner_end_d_mm > self.runner_w_mm + eps:
             raise ValueError(
                 f"runner_end_d_mm ({self.runner_end_d_mm}) must be ≤ runner_w_mm "
@@ -280,6 +314,13 @@ class FanRunnerPlateConfig:
     def apex_depth_mm(self) -> float:
         """Depth below the product edge where the extended flanks meet on the axis."""
         return 0.5 * self.runner_w_mm * math.tan(math.radians(self.fan_flank_deg))
+
+    @property
+    def arm_w_sup_mm(self) -> float:
+        """Gate 3: supremum of ``arm_w_mm`` — the distance from a flank to the
+        axis on the edge line, ``runner_w/2 · sin(flank)``. The single source
+        for :meth:`validate` and the sidebar bound."""
+        return 0.5 * self.runner_w_mm * math.sin(math.radians(self.fan_flank_deg))
 
     @property
     def balancer_limits_mm(self) -> tuple[float, float, float]:
@@ -423,6 +464,15 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
     if cfg.runner_end_thk_mm is not None:
         thk[in_end] = cfg.runner_end_thk_mm
 
+    # Gate 3 arms: a strip arm_w wide (square to the flank) inside the
+    # triangle, past the edge band, outside the round end; a groove only
+    # deepens, so the thickness there is max(profile, arm_thk)
+    if cfg.runner_shape == "triangle_arms":
+        th = math.radians(cfg.fan_flank_deg)
+        dist_flank = (0.5 * cfg.runner_w_mm - ax) * math.sin(th) - dd * math.cos(th)
+        in_arm = in_tri & ~in_end & (dd > cfg.runner_edge_flat_mm) & (dist_flank <= cfg.arm_w_mm)
+        thk[in_arm] = np.maximum(thk[in_arm], cfg.arm_thk_mm)
+
     # balancer: base on the product edge line, apex balancer_h toward the
     # sprue; half-width grows linearly apex → base; a cut never adds material
     if cfg.balancer_on:
@@ -450,7 +500,11 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
         mask=mask,
         thickness_mm=thk,
         cell_size_mm=dx,
-        label="fan_runner_plate" if cfg.runner_shape == "triangle" else "pentagon_runner_plate",
+        label={
+            "triangle": "fan_runner_plate",
+            "pentagon": "pentagon_runner_plate",
+            "triangle_arms": "arms_runner_plate",
+        }[cfg.runner_shape],
         # ICM squeezes only the t4 body; the rim and the runner are fixed
         compression_mask=in_inner & mask,
         product_mask=in_plate & mask,

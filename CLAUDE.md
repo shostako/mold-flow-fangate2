@@ -48,6 +48,10 @@
   **Gate 1 の既定は v0.5.0 とビット一致**（`tests/test_geometry_gate2.py` の指紋。新しい変数の既定が従来の規則そのもの）。
   Gate 2 の図面は `docs/draft/gate2_drawing.pdf`（`gate2_drawing.py` が builder から描く）。UI の Gate 2 専用ウィジェットは
   `fg_side_len_mm` / `fg_g2_*`、Gate 1 の円の深さは `fg_g1_*`
+- Gate 3（v0.9.0）: `runner_shape = "triangle_arms"`（既定は `GATE3_DEFAULTS`）＝ Gate 1 のフランクに沿って、
+  フランクから直角に幅 `arm_w_mm`（9.0）の腕を肉厚 `arm_thk_mm`（3.5）に彫った形。腕はエッジ帯の先から丸端の円の手前まで、
+  中の肉厚は `max(Gate 1, arm_thk)`。腕の変数は Gate 1・2 では効かない（Gate 1 の指紋は不変）。UI は Gate 1 の入力欄を共用し、
+  腕の 2 つだけ `fg_g3_*`。テストは `tests/test_geometry_gate3.py`（直角の距離を外積で独立に計算して照合）と `tests/test_gate3_ui.py`
 - 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest -n auto --dist loadscope`（CI と同じ。直列だと 8 分、4 並列で 5 分半）
 - Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期
