@@ -382,6 +382,7 @@ class MultilayerHeleShawSolver:
         layer_Brinkman: np.ndarray | None = None
         short_shot_mask: np.ndarray | None = None
         short_shot_mask_end: np.ndarray | None = None
+        layer_T_K_end: np.ndarray | None = None
         iters_done = 0
         converged = False
         damping_events = 0
@@ -576,6 +577,7 @@ class MultilayerHeleShawSolver:
                         alpha_m2_s=alpha,
                     )
                     T_end = T_end + np.where(cavity_mask[None, :, :], dT_end, 0.0)
+                layer_T_K_end = T_end
                 short_shot_mask_end = cavity_mask & (T_end[k_mid] <= T_solid_K)
 
             # Diagnostic Brinkman number from the converged state. Always
@@ -610,6 +612,7 @@ class MultilayerHeleShawSolver:
             "layer_Brinkman": layer_Brinkman,
             "short_shot_mask": short_shot_mask,
             "short_shot_mask_end": short_shot_mask_end,
+            "layer_T_K_end": layer_T_K_end,
             "iters_done": iters_done,
             "converged": converged,
             "damping_events": damping_events,
