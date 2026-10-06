@@ -22,6 +22,7 @@ import streamlit.components.v1 as components
 
 from core import (
     GATE2_DEFAULTS,
+    GATE3_DEFAULTS,
     RUNNER_SHAPES,
     FanRunnerPlateConfig,
     HeleShawSolver,
@@ -98,7 +99,7 @@ st.set_page_config(page_title="12.3 インチ 額縁プレート 流動解析", 
 st.title("12.3 インチ 額縁プレート 流動解析")
 st.caption(
     "12.3 インチ 額縁肉厚プレート（外周 20 幅 t1.0／内側 t4.0、圧縮は内側だけ）をホットランナーゲート φ3 →"
-    "ランナ（幅 300、R12 丸端。Gate 1 逆三角形／Gate 2 五角形）で射出圧縮成形するときの樹脂流動を簡易解析するツール。"
+    "ランナ（幅 300、R12 丸端。Gate 1 逆三角形／Gate 2 五角形／Gate 3 逆三角形＋腕）で射出圧縮成形するときの樹脂流動を簡易解析するツール。"
     "ランナ寸法・肉盗み・圧縮条件の方向性検討を、実機評価前の初期検討段階で迅速に行うことを目的とする。"
     "商用 CAE（Moldflow 等）の代替を意図したものではない。"
 )
@@ -296,7 +297,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
     st.markdown(
         "- 薄板キャビティ内の 2D 流動（局所剪断と局所抵抗の効果）\n"
         "- 樹脂物性（密度・比熱・熱拡散率 → 熱伝導率派生・Cross-WLF 粘度パラメータ）\n"
-        "- 額縁プレートの 2 段肉厚、ランナ（Gate 1 逆三角形／Gate 2 五角形。幅・R 丸端・深さ方向の肉厚プロファイル）、肉盗み（▽）\n"
+        "- 額縁プレートの 2 段肉厚、ランナ（Gate 1 逆三角形／Gate 2 五角形／Gate 3 逆三角形＋フランク沿いの腕。幅・R 丸端・深さ方向の肉厚プロファイル）、肉盗み（▽）\n"
         "- 流動先端の到達順、ウェルドライン、エアトラップ\n"
         "- 圧力分布の相対値（ゲート＝1、最終充填点＝0 の正規化）\n"
         "- 充填時間（射出率 $Q$ から逆算した絶対時間）\n"
@@ -359,9 +360,11 @@ material_keys = list(db.keys())
 # ----------------------- fan-runner plate: parametric inputs -----------------------
 _D = FanRunnerPlateConfig()  # Gate 1 = the drawing (docs/spec.md)
 _D2 = FanRunnerPlateConfig(**GATE2_DEFAULTS)  # Gate 2 = the pentagon (docs/spec.md)
+_D3 = FanRunnerPlateConfig(**GATE3_DEFAULTS)  # Gate 3 = Gate 1 + flank arms (docs/spec.md)
 _SHAPE_LABELS = {
     "triangle": "Gate 1（逆三角形・客先図面）",
     "pentagon": "Gate 2（五角形・側辺つき）",
+    "triangle_arms": "Gate 3（逆三角形＋フランク沿いの腕）",
 }
 
 
@@ -390,10 +393,11 @@ def _fan_runner_sidebar() -> dict:
         format_func=_SHAPE_LABELS.__getitem__,
         key="fg_runner_shape",
         help="Gate 1 は客先図面の逆三角形（フランク 14°）。Gate 2 は製品エッジの両端から側辺を"
-        "下ろし、斜辺を丸端の円に接して結ぶ五角形。肉厚の決め方（エッジ帯・傾斜・円の外・円の中）"
-        "と肉盗みは両方で共通。",
+        "下ろし、斜辺を丸端の円に接して結ぶ五角形。Gate 3 は Gate 1 のフランクに沿って厚い溝"
+        "（腕）を彫った形。肉厚の決め方（エッジ帯・傾斜・円の外・円の中）と肉盗みは全部の形で共通。",
     )
     gate2 = v["runner_shape"] == "pentagon"
+    gate3 = v["runner_shape"] == "triangle_arms"
     with st.expander("製品（額縁プレート）", expanded=False):
         st.caption("圧縮されるのは内側の厚肉部だけ。額縁とランナは固定。")
         num("plate_w_mm", "製品幅（長辺、ランナ側）[mm]", 50.0, 600.0, 1.0)
@@ -535,6 +539,40 @@ def _fan_runner_sidebar() -> dict:
             )
         else:
             v["runner_end_thk_mm"] = None
+        if gate3:
+            st.markdown("**腕（フランク沿いの厚い溝）**")
+            # the bound comes from the config itself (single source with validate())
+            _w_sup = FanRunnerPlateConfig(
+                runner_w_mm=v["runner_w_mm"], fan_flank_deg=v["fan_flank_deg"]
+            ).arm_w_sup_mm
+            # largest 0.5 step strictly below the bound (the 1e-6 absorbs sin(30°) = 0.4999…)
+            _w_hi = max(math.floor((_w_sup - 0.5) * 2.0 + 1e-6) / 2.0, 0.5)
+            v["arm_w_mm"] = st.number_input(
+                "腕の幅（フランクから直角に測る）[mm]",
+                min_value=0.5,
+                max_value=float(_w_hi),
+                value=min(float(_D3.arm_w_mm), float(_w_hi)),
+                step=0.5,
+                format="%.1f",
+                key="fg_g3_arm_w_mm",
+            )
+            v["arm_thk_mm"] = st.number_input(
+                "腕の肉厚（エッジ帯より厚く）[mm]",
+                min_value=0.1,
+                max_value=10.0,
+                value=float(_D3.arm_thk_mm),
+                step=0.05,
+                format="%.2f",
+                key="fg_g3_arm_thk_mm",
+            )
+            st.caption(
+                "腕はエッジ帯の先から丸端の円の手前まで、両方のフランクに沿って彫る。"
+                "溝は削るだけなので、今の肉厚より薄い所は変えない。エッジ帯と丸端の円の肉厚は"
+                f"そのまま。腕の幅はフランクから軸までの距離 {_w_sup:.1f} mm 未満。"
+            )
+        else:
+            v["arm_w_mm"] = float(_D.arm_w_mm)
+            v["arm_thk_mm"] = float(_D.arm_thk_mm)
         num("gate_d_mm", "ゲート径 φ（ホットランナー、射出点）[mm]", 0.5, 50.0, 0.5, fmt="%.1f")
     with st.expander("肉盗み（▽ フローバランサー）", expanded=False):
         v["balancer_on"] = st.checkbox(
