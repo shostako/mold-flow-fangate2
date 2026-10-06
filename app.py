@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import re
 import shutil
 import tempfile
@@ -62,22 +63,28 @@ from core.visualizer import (
 
 APP_DIR = Path(__file__).parent
 
-#: Default machine conditions for the screw-side injection block. A real
-#: shot is a screw diameter plus positions and speeds; the rate follows from
-#: them. The previous default -- a flat 589 cm^3/s -- was a spec-sheet
-#: *maximum*, so every condition ran as if the screw were flat out.
+#: Default machine conditions for the screw-side injection block. The rate is
+#: Q = pi*D^2/4 * v; the spec-sheet 589 cm^3/s of the direct input is the
+#: machine's *maximum*, Phi50 x 200 mm/s gives 392.7 cm^3/s.
 DEF_SCREW_DIAMETER_MM = 50.0
 DEF_METERING_POSITION_MM = 150.0
 DEF_VP_POSITION_MM = 18.0
 DEF_SCREW_VELOCITY_MMS = 200.0
 #: Same machine as the sibling repos, but this part is two orders of
 #: magnitude larger, so the metering position is the one setting that
-#: differs: the stroke has to displace the cavity as drawn (plus a margin)
-#: before the volume-to-time map stops extrapolating past V/P. The machine
-#: runs three equal-speed steps -- arithmetically a single stage, kept as
-#: the default because it is what its screen says -- but the switch points
-#: of the other job do not carry over, so the stroke is split evenly.
-DEF_INJECTION_STAGES = 3
+#: differs: once the stage count is 2 or more, the stroke has to displace
+#: the cavity as drawn (plus a margin) before the volume-to-time map stops
+#: extrapolating past V/P.
+#: v0.8.0 (sim v0.55.0): one stage by default. At one speed the metering and
+#: V/P positions only bound a stroke the solver never reads (the shot volume
+#: is the two-phase input, not metering minus V/P), so a single stage asks
+#: for the diameter and the speed and nothing else. The positions, the
+#: switch points and the per-stage speeds appear once the stage count is 2
+#: or more. v0.4.0-v0.7.0 opened on three equal-speed stages.
+DEF_INJECTION_STAGES = 1
+#: The machine's own switch points, pre-filled at ``len(...) + 1`` stages.
+#: The other job's (28 / 22) do not carry over, so none are known here and
+#: every stage count splits the stroke evenly.
 DEF_SWITCH_POSITIONS_MM = ()
 #: Cap on the stage count the UI will unfold. Machines go further; this is
 #: the point past which the sidebar stops being readable.
@@ -134,7 +141,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "射出圧縮 ON なら §7 の等価モデルで短縮され、スキン層の「圧力一定」時計と層別の熱結合は"
         "体積重み付き $\\tau$ の比（抵抗比）で再スケールする — スキン層は膨張のみ、層別は層の粘度分布"
         "次第で 1 を挟んでどちらにも動く（そのとき $t_{\\text{fill}}$ は $V/Q$ で割った値ではない）\n"
-        "- 多段射出（実機条件モードで段数 2 以上）では $Q$ が段ごとに変わるので、"
+        "- 多段射出（スクリュー径と射出速度から計算で段数 2 以上）では $Q$ が段ごとに変わるので、"
         "体積 → 時刻の写像が段の切替体積で折れる区分線形になる。"
         "各段の注入体積 $\\pi D^2/4 \\cdot L_i$ は速度によらずストロークだけで決まるので、"
         "折れ点の体積は固定で、傾き（＝射出率）だけが段ごとに変わる\n"
@@ -173,7 +180,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- スキンが出会う年齢 $t_c$ に役務が届いたセル＝**封止**（充填後に閉じた、赤マーク）。閉じた後に届くセルは**未充填**（充填時間なし）"
     )
 
-    st.markdown("### 5. 壁面冷却モデル B：層別 N 層離散化（選択式。二相モデルとは併用不可）")
+    st.markdown("### 5. 壁面冷却モデル B：層別 N 層離散化（選択式。二相モデルの射出相にも乗る）")
     st.markdown(
         "厚み方向を $N$ 層に離散化し、**各層に固有の温度・粘度・剪断速度** を持たせる。"
         "スキン層モデルが「壁面凍結フロント」しか扱わないのに対し、こちらは**コア内部の温度・粘度プロファイル**"
@@ -196,8 +203,8 @@ with st.expander("📐 使用している方程式と適用範囲"):
     )
     st.markdown(
         "両壁から育つ熱境界層の重ね合わせ。長時間極限の数値発散を避けるため "
-        r"$T_k \ge T_{\text{mold}}$ で clamp。$t_{\text{arr}}(x,y) = (\tau/\tau_{\max}) \cdot T_{\text{fill}}$"
-        " はセル到達時間。"
+        r"$T_k \ge T_{\text{mold}}$ で clamp。$t_{\text{arr}}(x,y)$"
+        " は §2 の体積 CDF 写像によるセル到達時間。"
     )
 
     st.markdown("**5-3. 層別剪断速度（Poiseuille 解析微分）**")
@@ -632,14 +639,26 @@ def _injection_error_ja(message: str) -> str:
 
 def _injection_rate_inputs(
     mode: str,
-) -> tuple[InjectionProfile | None, float | None, str | None]:
-    """The rate half of the injection block: a screw profile, or a flat Q.
+) -> tuple[InjectionProfile | None, float | None, str | None, dict | None]:
+    """The rate half of the injection block: a flat Q, or one from the screw.
 
-    Returns ``(profile, Q_cm3s, error)``. Exactly one of the first two is set
-    when ``error`` is None. On a rejected machine condition both are None and
-    ``error`` carries the message -- the caller stops the run rather than
-    this function calling ``st.stop()``, which sits above the version caption
-    and would take it off the screen with the error still on it.
+    Returns ``(profile, Q_cm3s, error, machine)``. Exactly one of the first
+    two is set when ``error`` is None. ``machine`` is the screw-side record
+    for settings.json (None on the direct rate).
+
+    - ``direct``: the rate slider.
+    - ``machine``, one stage (the default): screw diameter and speed only,
+      ``Q = pi*D^2/4 * v`` handed to the solver as a flat rate. A single
+      speed has no switch to place, and the stroke between metering and V/P
+      does not set how much resin goes in (that is the two-phase shot
+      volume), so the positions are not asked for.
+    - ``machine``, two stages or more: metering and V/P positions, the switch
+      points and a speed per stage build an ``InjectionProfile``.
+
+    On a rejected machine condition the first two are None and ``error``
+    carries the message -- the caller stops the run rather than this function
+    calling ``st.stop()``, which sits above the version caption and would take
+    it off the screen with the error still on it.
 
     The stage widgets are laid out with static bounds (the metering and V/P
     positions of the run) and the ordering is checked afterwards instead of
@@ -656,10 +675,10 @@ def _injection_rate_inputs(
             589.0,
             step=1.0,
             key="inj_Q_direct",
-            help="ソディック等の成形機取説の射出率に対応。"
-            "取説の値は機械の最大射出率なので、実際より速く充填されることがある。",
+            help="成形機の取説の射出率をそのまま使う。取説の値は機械の最大射出率なので、"
+            "実際より速く充填される。実機に合わせるなら「スクリュー径と射出速度から計算」。",
         )
-        return None, float(Q), None
+        return None, float(Q), None, None
 
     screw_d = st.number_input(
         "スクリュー径 [mm]",
@@ -670,6 +689,38 @@ def _injection_rate_inputs(
         key="inj_screw_d",
         help="バレル内でスクリューが押しのける断面の直径。Q = πD²/4 × v。",
     )
+    n_stages = int(
+        st.number_input(
+            "射出段数",
+            min_value=1,
+            max_value=MAX_INJECTION_STAGES,
+            value=DEF_INJECTION_STAGES,
+            step=1,
+            key="inj_num_stages",
+            help="1 なら射出速度だけで射出率が決まる。2 以上にすると計量位置・"
+            "V/P切替位置・各段の速度切替位置と速度の欄が出る。",
+        )
+    )
+    area_mm2 = math.pi * float(screw_d) ** 2 / 4.0
+
+    if n_stages == 1:
+        v = float(
+            st.number_input(
+                "射出速度 [mm/s]",
+                min_value=0.1,
+                max_value=1000.0,
+                # Coming back from several stages, start from the first
+                # stage's speed rather than the default.
+                value=float(st.session_state.get("inj_velocity_0", DEF_SCREW_VELOCITY_MMS)),
+                step=1.0,
+                key="inj_velocity",
+                help="スクリューの前進速度（成形機の画面の射出速度）。",
+            )
+        )
+        Q = area_mm2 * v / 1000.0
+        st.caption(f"射出率: **{Q:.1f} cm³/s**（π × {float(screw_d):g}² / 4 × {v:g} mm/s）")
+        return None, Q, None, {"screw_diameter_mm": float(screw_d), "stages": 1, "velocity_mms": v}
+
     meter_pos = st.number_input(
         "計量位置 [mm]",
         min_value=0.5,
@@ -688,18 +739,7 @@ def _injection_rate_inputs(
         key="inj_vp_pos",
         help="速度制御から保圧に切り替わる位置。ここまでが充填。",
     )
-    n_stages = int(
-        st.number_input(
-            "射出段数",
-            min_value=1,
-            max_value=MAX_INJECTION_STAGES,
-            value=DEF_INJECTION_STAGES,
-            step=1,
-            key="inj_num_stages",
-            help="1 なら計量位置から V/P まで一定速度。2 以上にすると"
-            "各段の速度切替位置と速度の欄が出る。",
-        )
-    )
+    machine = {"screw_diameter_mm": float(screw_d), "stages": n_stages}
 
     if vp_pos >= meter_pos:
         return (
@@ -709,19 +749,19 @@ def _injection_rate_inputs(
                 f"V/P切替位置 ({vp_pos:g} mm) が計量位置 ({meter_pos:g} mm) 以上です。"
                 "スクリューは前進するので、V/P は計量位置より小さい必要があります。"
             ),
+            machine,
         )
 
     # Only the boundaries between stages are asked for; the last stage always
     # ends at V/P, which is what makes it the V/P transfer. Defaults are the
-    # machine's own switch points at the default stage count, an even split of
-    # the stroke otherwise.
+    # machine's own switch points at the stage count it is set up in, an even
+    # split of the stroke otherwise.
     span = meter_pos - vp_pos
     switches: list[float] = []
     for i in range(n_stages - 1):
         default = meter_pos - span * (i + 1) / n_stages
         if (
-            n_stages == DEF_INJECTION_STAGES
-            and i < len(DEF_SWITCH_POSITIONS_MM)
+            n_stages == len(DEF_SWITCH_POSITIONS_MM) + 1
             and vp_pos < DEF_SWITCH_POSITIONS_MM[i] < meter_pos
         ):
             # The machine's own switch points, as long as they still sit
@@ -739,13 +779,16 @@ def _injection_rate_inputs(
                 )
             )
         )
+    # A new stage starts at the single-stage speed the user had, so going
+    # from one stage to several keeps the speed instead of resetting it.
+    v_seed = float(st.session_state.get("inj_velocity", DEF_SCREW_VELOCITY_MMS))
     velocities = [
         float(
             st.number_input(
                 f"第{i + 1}段 射出速度 [mm/s]",
                 min_value=0.1,
                 max_value=1000.0,
-                value=DEF_SCREW_VELOCITY_MMS,
+                value=v_seed,
                 step=1.0,
                 key=f"inj_velocity_{i}",
             )
@@ -771,6 +814,7 @@ def _injection_rate_inputs(
                 "速度切替位置は計量位置から V/P 位置へ向かって降順に並べてください"
                 "（最終段は V/P 位置で終わります）。"
             ),
+            machine,
         )
 
     lines = [
@@ -778,13 +822,12 @@ def _injection_rate_inputs(
         f"射出時間 (V/P まで): **{profile.total_time_s:.3f} s**",
         f"理論射出量 (V/P 時点): **{profile.total_volume_cm3:.2f} cm³**",
     ]
-    if profile.num_stages > 1:
-        for i, (rate, t, vol) in enumerate(
-            zip(profile.stage_rates_cm3s(), profile.stage_times_s(), profile.stage_volumes_mm3())
-        ):
-            lines.append(f"　第{i + 1}段: {rate:.1f} cm³/s / {t:.3f} s / {vol / 1000.0:.2f} cm³")
+    for i, (rate, t, vol) in enumerate(
+        zip(profile.stage_rates_cm3s(), profile.stage_times_s(), profile.stage_volumes_mm3())
+    ):
+        lines.append(f"　第{i + 1}段: {rate:.1f} cm³/s / {t:.3f} s / {vol / 1000.0:.2f} cm³")
     st.caption("  \n".join(lines))
-    return profile, None, None
+    return profile, None, None, machine
 
 
 def build_geometry(v: dict) -> tuple[Geometry, dict]:
@@ -848,23 +891,27 @@ with st.sidebar:
         )
         inj_mode = st.radio(
             "射出率の指定",
-            options=("machine", "direct"),
-            index=0,
+            options=("direct", "machine"),
+            # 既定はスクリュー径と射出速度から計算（Φ50 × 200 mm/s、単段 = 392.7 cm³/s）。
+            # v0.8.0 で sim v0.55.0・v0.57.0 に揃えた。v0.4.0〜v0.7.0 は同じ計算側の
+            # 3 段（全段同速）が既定だった。直接入力の 589 は取説の最大射出率。
+            index=1,
             key="inj_mode",
             format_func=lambda m: {
-                "machine": "実機条件から計算（スクリュー径・位置・速度）",
                 "direct": "射出率を直接入力",
+                "machine": "スクリュー径と射出速度から計算",
             }[m],
-            help="実機条件: Q = πD²/4 × v。成形機に実際に入れる数字から射出率と"
-            "V/P までの射出時間を出す。直接入力: 取説の射出率をそのまま使う。",
+            help="直接入力: 取説の射出率（機械の最大値）をそのまま使う。"
+            "スクリュー径と射出速度から計算: Q = πD²/4 × v。射出段数を 2 以上にすると"
+            "計量位置・V/P切替位置・各段の速度を入れる多段射出になる。",
         )
-        inj_profile, inj_Q, inj_error = _injection_rate_inputs(inj_mode)
+        inj_profile, inj_Q, inj_error, inj_machine = _injection_rate_inputs(inj_mode)
 
     with st.expander("壁面冷却モデル", expanded=False):
         wall_model = st.radio(
             "壁面冷却の表現",
             options=("none", "skin", "multilayer"),
-            index=1,
+            index=2,
             key="wall_model",
             format_func=lambda m: {
                 "none": "なし（等温・代表粘度のみ）",
@@ -877,14 +924,19 @@ with st.sidebar:
                 "コア層 h_core=h-2s だけが流れる（露光時計、役務平均）。封止と未充填も検出。\n"
                 "層別: 厚み方向を N 層に分割、Neumann 1D 温度プロファイルから "
                 "層別粘度を Cross-WLF で評価。fixed-point で τ ↔ T_k ↔ η_k を結合。\n"
-                "極薄プレート (t<0.5mm) では層別を推奨。"
+                "既定は層別（N=7）。温度まで効くのは層別だけ。スキン層・層別とも二相"
+                "ショートショットの射出相に乗る。"
             ),
         )
 
         # default container (so downstream `solver = HeleShawSolver(...)` /
         # `MultilayerHeleShawSolver(...)` always has the kwargs it expects).
-        # 既定モードは『スキン層』(index=1) — 既定 ON の二相ショートショットと併用でき、
-        # 射出相で薄い額縁が痩せる順番まで出る（層別は二相と併用不可）。
+        # 既定モードは『層別』(index=2、v0.8.0、sim v0.50.0 の横展開)。v0.1.0〜v0.7.0 は
+        # 『スキン層』(index=1)だった。層別は v0.8.0（sim v0.48.0）から二相ショートショットの
+        # 射出相に乗るので、既定 ON の二相と両立する。『なし』は η が定数で
+        # S ∝ h³ になり、材料も温度も充填順序に効かない（形状と Q だけで決まる）。
+        # スキン層で効くのは材料の熱拡散率 α（s = c·√(αt)）で、T_melt / T_mold は
+        # 依然として効かない — 温度まで効かせるには層別。
         # 層別を選んだときの既定値 (極薄 t0.35〜0.50 向け):
         #   層数 N: 7 (壁勾配が急なので N=5 から増量)
         #   反復上限: 12 (収束が遅くなりがちなので上限緩め)
@@ -950,15 +1002,15 @@ with st.sidebar:
                     "二相ショートショットの射出相は計量 V/Q の定義上つねに速度制御。"
                 ),
             )
-            if inj_profile is not None and skin_clock_mode == "constant_pressure":
-                # A screw profile prescribes a rate. Holding pressure instead
+            if inj_mode == "machine" and skin_clock_mode == "constant_pressure":
+                # A screw speed prescribes a rate. Holding pressure instead
                 # is the "machine could not keep up" scenario; the profile's
                 # shape survives (every stage stretches by the same factor)
                 # but the times are no longer the ones on the machine.
                 st.caption(
-                    "実機条件（スクリュー位置と速度）は速度制御そのものです。"
-                    "圧力一定を選ぶと、抵抗増のぶん**プロファイル全体が同じ倍率で**"
-                    "引き伸ばされ、V/P までの射出時間は設定値と一致しなくなります。"
+                    "スクリュー径と射出速度で決めた射出は速度制御そのものです。"
+                    "圧力一定を選ぶと、抵抗増のぶん**射出全体が同じ倍率で**"
+                    "引き伸ばされ、射出時間は設定値と一致しなくなります。"
                     "設定どおりの充填時間を見たいなら「速度制御」を選んでください。"
                 )
         elif wall_model == "multilayer":
@@ -1128,18 +1180,12 @@ with st.sidebar:
                 help=(
                     "計量を意図的に絞ったショートショットの最終形状を予測する。"
                     "射出相（型開きギャップで計量体積まで充填）→ 圧縮相（型閉じで"
-                    "溶融プールを前進、体積保存）の二相。壁面冷却モデルは『なし』か"
-                    "『スキン層』で実行（スキン層は射出相に乗る: 開いた薄板が射出中に"
-                    "痩せてゲート部が先に埋まる順番を出す）。『層別』とは併用不可。"
+                    "溶融プールを前進、体積保存）の二相。壁面冷却モデルは射出相に乗る:"
+                    "スキン層は開いた薄板が射出中に痩せてゲート部が先に埋まる順番を、"
+                    "層別は層ごとの温度・粘度で決まる順番を、どちらも計量 V/Q の時計で出す。"
+                    "圧縮相はどのモデルでも等温。"
                 ),
             )
-            if two_phase_on and wall_model == "multilayer":
-                # 実行時の一過性警告だけだと rerun で消えて「ON にしたのに何も
-                # 出ない」に見える。設定と同じ場所に常時出す。
-                st.warning(
-                    "壁面冷却モデルが『なし』または『スキン層』のときだけ実行される。"
-                    "現在の設定（層別）では二相解析はスキップされる。"
-                )
             if two_phase_on:
                 # 既定値は現在の形状の最終キャビティ体積。形状を変えると追従するが、
                 # ユーザーが値を触った後は（前回の自動値から動いているので）触らない。
@@ -1434,27 +1480,20 @@ if do_run:
             st.error(f"解析できない形状: {exc}")
             st.stop()
 
-        # 二相ショートショット。HeleShawSolver 専用（等温、またはスキン層を
-        # 射出相に乗せる）— 層別ソルバーには射出相の時計が無い。
+        # 二相ショートショット。壁面冷却モデル（なし／スキン層／層別）は射出相に
+        # 乗る。層別は固定点を計量 V/Q の時計（膨張なし）で解き直す。
         two_phase_result = None
         two_phase_skip_reason: str | None = None
         if two_phase_on:
-            if multilayer_on:
-                two_phase_skip_reason = "壁面冷却モデルが『層別』に設定されている（併用不可）"
-                st.warning(
-                    "二相ショートショット解析は壁面冷却モデル『なし』または『スキン層』専用です。"
-                    "今回はスキップしました。"
-                )
-            else:
-                try:
-                    two_phase_result = solve_two_phase_short_shot(solver, shot_volume_cm3)
-                except ValueError as e:
-                    # 例: 計量がゲート群の開ギャップ体積を下回る。メッセージは
-                    # モデル側の固定文言 + 体積数値のみで、パス等の秘匿情報は
-                    # 含まない。
-                    two_phase_result = None
-                    two_phase_skip_reason = str(e)
-                    st.warning(f"二相ショートショット解析をスキップしました: {e}")
+            try:
+                two_phase_result = solve_two_phase_short_shot(solver, shot_volume_cm3)
+            except ValueError as e:
+                # 例: 計量がゲート群の開ギャップ体積を下回る。メッセージは
+                # モデル側の固定文言 + 体積数値のみで、パス等の秘匿情報は
+                # 含まない。
+                two_phase_result = None
+                two_phase_skip_reason = str(e)
+                st.warning(f"二相ショートショット解析をスキップしました: {e}")
 
         # 入力の記録。metadata.json は解いた結果しか持たないので、これが無いと
         # ダウンロードした ZIP から設定を復元できない (画像から寸法を測って
@@ -1468,6 +1507,7 @@ if do_run:
                 "mold_temperature_C": mold_C,
                 "injection_velocity_mms": inj_v,
                 "rate_input_mode": inj_mode,
+                "machine": inj_machine,
                 "injection_volume_flow_cm3s": inj_Q,
                 "injection_profile": (None if inj_profile is None else inj_profile.as_record()),
             },
@@ -1507,6 +1547,7 @@ if do_run:
                     "enabled": True,
                     "shot_volume_cm3": shot_volume_cm3,
                     "skin_layer": bool(skin_on),
+                    "wall_model": wall_model,
                 }
                 if two_phase_result is not None
                 else {"enabled": False}
@@ -1887,6 +1928,27 @@ if "mfs_result" in st.session_state:
                                 if _short > 1e-9
                                 else ""
                             )
+                        )
+                if md2.get("wall_model") == "multilayer":
+                    st.caption(
+                        f"層別 {md2.get('num_layers')} 層を射出相に乗せた結果（時計は計量 V/Q 固定、"
+                        f"固定点 {md2.get('multilayer_iterations')} 回"
+                        + ("で収束" if md2.get("multilayer_converged") else "、未収束")
+                        + "）。圧縮相は等温（層ごとの温度は圧縮での前進に効かない）。"
+                    )
+                    # the injection phase's own fixed-point loop, same cap as the main solve
+                    _fixed_point_warning(
+                        md2,
+                        converged_key="multilayer_converged",
+                        what="二相の射出相の層別モデル",
+                        advice="反復上限を上げて再実行を。",
+                        no_flow_key=None,
+                    )
+                    if md2.get("injection_center_solid_cells", 0) > 0:
+                        st.warning(
+                            f"射出終了時のプールに中央層が固化温度を下回ったセルが "
+                            f"{md2['injection_center_solid_cells']} ある。層別モデルは封止の"
+                            "時刻を持たないので、このセルも圧縮相では流路として扱っている。"
                         )
                 if md2.get("injection_extrapolated_past_vp"):
                     # The sidebar's own extrapolation check compares the

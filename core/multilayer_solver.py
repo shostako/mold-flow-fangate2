@@ -335,56 +335,27 @@ class MultilayerHeleShawSolver:
         zeta = self.layer_zeta()
         return 0.5 * (zeta[:-1] + zeta[1:])
 
-    # ------------------------------------------------------------------
-    # Main entry point
-    # ------------------------------------------------------------------
+    def _fixed_point(
+        self,
+        h_open: np.ndarray,
+        dirichlet: np.ndarray,
+        T_fill_baseline: float,
+        *,
+        rate_controlled: bool = False,
+    ) -> dict:
+        """The τ ↔ t_arr ↔ T_k ↔ η_k ↔ S_total fixed point on the ``h_open`` cavity.
 
-    def solve(self, num_frames: int = 24) -> MultilayerFlowResult:
-        """Solve the Hele-Shaw τ field using the layer-integrated conductance.
-
-        With ``thermal_coupling=False`` this is a single solve with a
-        uniform per-layer viscosity (PR-A behaviour). With
-        ``thermal_coupling=True`` (default) a fixed-point loop couples
-        τ ↔ t_arr ↔ T_k ↔ η_k ↔ S_total.
+        ``T_fill_baseline`` is the clock length the volume-CDF map assigns to
+        the last cell. ``rate_controlled=False`` (``solve``) lets the clock
+        grow with the volume-mean τ -- the constant-pressure proxy.
+        ``rate_controlled=True`` keeps it at ``T_fill_baseline``: a metered
+        shot is rate-controlled by definition, so the two-phase injection
+        phase (``core.two_phase``) reads the layers on the machine clock.
+        Returns the converged state as a dict of the locals ``solve`` uses.
         """
-        if not self.geometry.gates:
-            raise ValueError("Geometry has no gates")
-        check_gate_reachability(self.geometry)
-
         base = self._base
         eta_baseline = base._effective_viscosity()
-
-        dirichlet = np.zeros(self.geometry.shape, dtype=bool)
-        for iy, ix in self.geometry.gates:
-            dirichlet[iy, ix] = True
-
-        h_open = base._open_thickness_field()  # mm
         cavity_mask = self.geometry.mask
-
-        # absolute time scaling baseline (same logic as HeleShawSolver.solve)
-        V_cm3 = self.geometry.volume_cm3()
-        if self.injection_profile is not None:
-            T_fill_baseline = float(self.injection_profile.time_at_volume_mm3(V_cm3 * 1000.0))
-        elif self.injection_volume_flow_cm3s is None:
-            T_fill_baseline = 1.5
-        else:
-            Q = max(float(self.injection_volume_flow_cm3s), 1e-6)
-            T_fill_baseline = V_cm3 / Q
-        if self.compression_molding:
-            V_total_mm3 = self.geometry.volume_cm3() * 1000.0
-            if self.compression_stroke_mm is not None:
-                stroke = float(self.compression_stroke_mm)
-                A_cm_mm2 = self.geometry.compression_area_mm2()
-                delta_V = stroke * A_cm_mm2
-                effective_factor = 1.0 + (delta_V / max(V_total_mm3, 1e-9))
-            else:
-                f_comp = float(self.geometry.compression_volume_fraction())
-                f_comp = max(min(f_comp, 1.0), 0.0)
-                effective_factor = 1.0 + (float(self.compression_factor) - 1.0) * f_comp
-            effective_factor = max(effective_factor, 1e-3)
-            T_fill_baseline = T_fill_baseline * (
-                self.compression_fraction / effective_factor + (1.0 - self.compression_fraction)
-            )
 
         moments = self.layer_moments()
         zeta_centers = self.layer_zeta_centers()
@@ -410,6 +381,8 @@ class MultilayerHeleShawSolver:
         layer_shear_dT_K: np.ndarray | None = None
         layer_Brinkman: np.ndarray | None = None
         short_shot_mask: np.ndarray | None = None
+        short_shot_mask_end: np.ndarray | None = None
+        layer_T_K_end: np.ndarray | None = None
         iters_done = 0
         converged = False
         damping_events = 0
@@ -544,7 +517,10 @@ class MultilayerHeleShawSolver:
                 # reproduces the old max-ratio exactly.
                 rep_new = base._tau_volume_mean(tau_new, cavity_mask, cell_volume)
                 rep_base = base._tau_volume_mean(tau_baseline, cavity_mask, cell_volume)
-                if rep_new is None or rep_base is None:
+                if rate_controlled or rep_new is None or rep_base is None:
+                    # Rate control (the two-phase metered shot): the clock is
+                    # the machine's V/Q and never inflates; the pressure rises
+                    # instead. The representatives are still reported.
                     T_fill_new = T_fill_baseline
                 else:
                     T_fill_new = T_fill_baseline * (rep_new / rep_base)
@@ -571,6 +547,39 @@ class MultilayerHeleShawSolver:
                 T_mid = layer_T_K[k_mid]
                 short_shot_mask = cavity_mask & (T_mid <= T_solid_K)
 
+                # Each iteration builds the temperatures from the tau it
+                # started with and then moves tau, so ``short_shot_mask``
+                # belongs to the tau one step before the returned one. On a
+                # converged loop the two agree to ``tol``; on a cut-off loop
+                # (an oscillating fixed point) they need not. Read the centre
+                # layer once more on the returned tau -- the same map the next
+                # iteration would start from -- for callers that intersect it
+                # with a region taken from that tau (the two-phase pool, Codex
+                # P2 on mold-flow-fangate2#13).
+                t_arr_end = base._arrival_time_field(tau, ~np.isnan(tau), cell_volume, T_fill)
+                t_arr_end = np.where(np.isnan(t_arr_end), 0.0, t_arr_end)
+                T_end = neumann_layer_temperatures(
+                    zeta_centers=zeta_centers,
+                    t_arr_s=t_arr_end,
+                    h_total_mm=h_open,
+                    T_melt_K=float(self.melt_temperature_K),
+                    T_mold_K=float(self.mold_temperature_K),
+                    alpha_m2_s=alpha,
+                )
+                if self.shear_heating_enabled and layer_eta_Pa_s is not None:
+                    dT_end = shear_heating_temperature_rise(
+                        eta_per_layer_Pa_s=layer_eta_Pa_s,
+                        gamma_dot_per_layer_s_inv=layer_gamma_dot,
+                        t_arr_s=t_arr_end,
+                        h_total_mm=h_open,
+                        density_kg_m3=float(self.material.density_melt_kgm3),
+                        specific_heat_J_kgK=float(self.material.specific_heat_J_kgK),
+                        alpha_m2_s=alpha,
+                    )
+                    T_end = T_end + np.where(cavity_mask[None, :, :], dT_end, 0.0)
+                layer_T_K_end = T_end
+                short_shot_mask_end = cavity_mask & (T_end[k_mid] <= T_solid_K)
+
             # Diagnostic Brinkman number from the converged state. Always
             # computed (even when shear_heating_enabled is False) so the
             # user can decide whether the correction is needed for their
@@ -586,6 +595,104 @@ class MultilayerHeleShawSolver:
                     thermal_conductivity_W_mK=self.material.thermal_conductivity_W_mK,
                     delta_T_K=delta_T_ref,
                 )
+
+        return {
+            "moments": moments,
+            "h_layers": h_layers,
+            "cell_volume": cell_volume,
+            "tau": tau,
+            "tau_max": tau_max,
+            "tau_max_baseline": tau_max_baseline,
+            "T_fill": T_fill,
+            "T_fill_inflation": T_fill_inflation,
+            "layer_T_K": layer_T_K,
+            "layer_eta_Pa_s": layer_eta_Pa_s,
+            "layer_gamma_dot": layer_gamma_dot,
+            "layer_shear_dT_K": layer_shear_dT_K,
+            "layer_Brinkman": layer_Brinkman,
+            "short_shot_mask": short_shot_mask,
+            "short_shot_mask_end": short_shot_mask_end,
+            "layer_T_K_end": layer_T_K_end,
+            "iters_done": iters_done,
+            "converged": converged,
+            "damping_events": damping_events,
+            "tau_rep_flow": tau_rep_flow,
+            "tau_rep_baseline": tau_rep_baseline,
+            "T_solid_K": T_solid_K,
+        }
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
+
+    def solve(self, num_frames: int = 24) -> MultilayerFlowResult:
+        """Solve the Hele-Shaw τ field using the layer-integrated conductance.
+
+        With ``thermal_coupling=False`` this is a single solve with a
+        uniform per-layer viscosity (PR-A behaviour). With
+        ``thermal_coupling=True`` (default) a fixed-point loop couples
+        τ ↔ t_arr ↔ T_k ↔ η_k ↔ S_total.
+        """
+        if not self.geometry.gates:
+            raise ValueError("Geometry has no gates")
+        check_gate_reachability(self.geometry)
+
+        base = self._base
+        eta_baseline = base._effective_viscosity()
+
+        dirichlet = np.zeros(self.geometry.shape, dtype=bool)
+        for iy, ix in self.geometry.gates:
+            dirichlet[iy, ix] = True
+
+        h_open = base._open_thickness_field()  # mm
+        cavity_mask = self.geometry.mask
+
+        # absolute time scaling baseline (same logic as HeleShawSolver.solve)
+        V_cm3 = self.geometry.volume_cm3()
+        if self.injection_profile is not None:
+            T_fill_baseline = float(self.injection_profile.time_at_volume_mm3(V_cm3 * 1000.0))
+        elif self.injection_volume_flow_cm3s is None:
+            T_fill_baseline = 1.5
+        else:
+            Q = max(float(self.injection_volume_flow_cm3s), 1e-6)
+            T_fill_baseline = V_cm3 / Q
+        if self.compression_molding:
+            V_total_mm3 = self.geometry.volume_cm3() * 1000.0
+            if self.compression_stroke_mm is not None:
+                stroke = float(self.compression_stroke_mm)
+                A_cm_mm2 = self.geometry.compression_area_mm2()
+                delta_V = stroke * A_cm_mm2
+                effective_factor = 1.0 + (delta_V / max(V_total_mm3, 1e-9))
+            else:
+                f_comp = float(self.geometry.compression_volume_fraction())
+                f_comp = max(min(f_comp, 1.0), 0.0)
+                effective_factor = 1.0 + (float(self.compression_factor) - 1.0) * f_comp
+            effective_factor = max(effective_factor, 1e-3)
+            T_fill_baseline = T_fill_baseline * (
+                self.compression_fraction / effective_factor + (1.0 - self.compression_fraction)
+            )
+
+        st = self._fixed_point(h_open, dirichlet, T_fill_baseline)
+        moments = st["moments"]
+        h_layers = st["h_layers"]
+        cell_volume = st["cell_volume"]
+        tau = st["tau"]
+        tau_max = st["tau_max"]
+        tau_max_baseline = st["tau_max_baseline"]
+        T_fill = st["T_fill"]
+        T_fill_inflation = st["T_fill_inflation"]
+        layer_T_K = st["layer_T_K"]
+        layer_eta_Pa_s = st["layer_eta_Pa_s"]
+        layer_gamma_dot = st["layer_gamma_dot"]
+        layer_shear_dT_K = st["layer_shear_dT_K"]
+        layer_Brinkman = st["layer_Brinkman"]
+        short_shot_mask = st["short_shot_mask"]
+        iters_done = st["iters_done"]
+        converged = st["converged"]
+        damping_events = st["damping_events"]
+        tau_rep_flow = st["tau_rep_flow"]
+        tau_rep_baseline = st["tau_rep_baseline"]
+        T_solid_K = st["T_solid_K"]
 
         # Standard post-processing (mirrors HeleShawSolver.solve).
         msk = ~np.isnan(tau)

@@ -6,8 +6,16 @@ but under-reports seal-off)."""
 
 from __future__ import annotations
 
-from tests.ui_helpers import app as _app
+from tests.ui_helpers import app as _page
 from tests.ui_helpers import texts as _texts
+
+
+def _app():
+    """The page with the skin wall model selected (the page opens on the
+    layered model since v0.8.0)."""
+    at = _page()
+    at.radio(key="wall_model").set_value("skin").run()
+    return at
 
 
 def _iter_slider(at):
