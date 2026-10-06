@@ -16,7 +16,8 @@ raster is mirror-symmetric about it (the plate is 302.26 wide, so without
 it the axis lands 0.13 mm off the cell grid and the runner rasterises
 lopsided).
 
-Runner silhouette (one shape; the drawing has no gate variants):
+Runner silhouette, ``runner_shape``. **Gate 1** (``"triangle"``, the
+customer drawing):
 
 - a triangle hanging from the product edge, ``runner_w`` wide on the edge
   line, both flanks straight at ``fan_flank_deg`` to the edge line, so the
@@ -30,12 +31,26 @@ the extended apex lies inside the disc, so the silhouette is exactly the
 union of the two; ``validate`` only requires the triangle to reach the top
 of the disc so the union stays connected.
 
+**Gate 2** (``"pentagon"``, the 2026-10-06 sketch): straight sides drop
+``side_len`` from both ends of the ``runner_w`` edge line (measured below
+the product edge, i.e. below the 20 mm rim — the rim-inclusive side is
+``frame_w + side_len``), then a slant runs from each corner to the round end
+and is **tangent** to it on its lower side; the bottom between the two
+tangent points is the disc's arc. The silhouette is the convex hull of the
+``runner_w × side_len`` rectangle and the disc. ``validate`` keeps each
+corner outside the disc and no deeper than the disc's bottom
+(``side_len ≤ runner_len + runner_end_d/2``; at equality the slants are
+level and the runner is a plain rectangle).
+
 Runner thickness is a function of the depth ``d`` alone (the section is
-taken on the axis, the plan view has no other thickness lines):
-``runner_edge_thk`` for ``d ≤ runner_edge_flat`` (the rim thickness carries
-1 mm past the edge), a linear ramp to ``runner_thk`` at
-``d = runner_ramp_end``, then ``runner_thk`` to the round end. No well
-pocket, no cold slug.
+taken on the axis, the plan view has no other thickness lines), for both
+shapes: ``runner_edge_thk`` on the edge band ``d ≤ runner_edge_flat`` (the
+band's width; 0 = no band), a linear ramp to ``runner_thk`` at
+``d = runner_ramp_end`` (``None`` = the top of the round end), then
+``runner_thk`` to the round end. ``runner_ramp_on = False`` drops the ramp:
+the band steps straight to ``runner_thk``. ``runner_end_thk`` (``None`` =
+follow the profile) overrides the thickness inside the round-end disc. No
+well pocket, no cold slug.
 
 Gate: the hot-runner orifice ``gate_d`` on the sprue axis. The Hele-Shaw
 model has no vertical channel, so that disc is the Dirichlet τ=0 injection
@@ -67,6 +82,18 @@ from scipy import ndimage
 
 from .geometry import Geometry
 
+#: ``runner_shape`` values: Gate 1 = the customer drawing, Gate 2 = the
+#: pentagon with straight sides (2026-10-06)
+RUNNER_SHAPES = ("triangle", "pentagon")
+
+#: Gate 2 as drawn (``docs/spec.md``): on top of the shared defaults, the ramp
+#: ends at the top of the round end and the disc is 2.5 thick.
+GATE2_DEFAULTS: dict = {
+    "runner_shape": "pentagon",
+    "runner_ramp_end_mm": None,
+    "runner_end_thk_mm": 2.5,
+}
+
 
 @dataclass(frozen=True)
 class FanRunnerPlateConfig:
@@ -84,11 +111,15 @@ class FanRunnerPlateConfig:
     fan_flank_deg: float = 14.0  # flank angle to the product edge line
     runner_len_mm: float = 30.0  # product edge → sprue axis
     runner_end_d_mm: float = 24.0  # round end (R12) centred on the axis
+    runner_shape: str = "triangle"  # Gate 1 "triangle" / Gate 2 "pentagon"
+    side_len_mm: float = 28.0  # Gate 2: side length below the product edge (rim excluded)
     # runner thickness profile by depth below the product edge
-    runner_thk_mm: float = 2.5  # full thickness (ramp end → round end)
+    runner_thk_mm: float = 2.5  # t_o: outside the round end (ramp end → bottom)
     runner_edge_thk_mm: float = 1.0  # on the edge band (= rim thickness)
-    runner_edge_flat_mm: float = 1.0  # edge band length at runner_edge_thk
-    runner_ramp_end_mm: float = 20.0  # depth where the ramp reaches runner_thk
+    runner_edge_flat_mm: float = 1.0  # edge band width at runner_edge_thk (0 = no band)
+    runner_ramp_on: bool = True  # False: the band steps straight to runner_thk
+    runner_ramp_end_mm: float | None = 20.0  # ramp's deep end; None = top of the round end
+    runner_end_thk_mm: float | None = None  # inside the round-end disc; None = the profile
     # hot-runner gate orifice on the axis (the injection point)
     gate_d_mm: float = 3.0
     # balancer: inverted triangle thinning, base on the product edge line
@@ -116,17 +147,22 @@ class FanRunnerPlateConfig:
             ("gate_d_mm", self.gate_d_mm),
             ("cell_size_mm", self.cell_size_mm),
         )
+        if self.runner_end_thk_mm is not None:
+            positives += (("runner_end_thk_mm", self.runner_end_thk_mm),)
         for name, val in positives:
             if val <= 0:
                 raise ValueError(f"{name} must be positive (got {val})")
         for name, val in (
             ("frame_w_mm", self.frame_w_mm),
+            ("side_len_mm", self.side_len_mm),
             ("runner_edge_flat_mm", self.runner_edge_flat_mm),
             ("runner_ramp_end_mm", self.runner_ramp_end_mm),
             ("pad_mm", self.pad_mm),
         ):
-            if val < 0:
+            if val is not None and val < 0:
                 raise ValueError(f"{name} must be ≥ 0 (got {val})")
+        if self.runner_shape not in RUNNER_SHAPES:
+            raise ValueError(f"runner_shape ({self.runner_shape!r}) must be one of {RUNNER_SHAPES}")
         if 2 * self.frame_w_mm >= min(self.plate_w_mm, self.plate_h_mm) - eps:
             raise ValueError(
                 f"frame_w_mm ({self.frame_w_mm}) must be < half of the smaller plate side"
@@ -139,18 +175,31 @@ class FanRunnerPlateConfig:
             raise ValueError(
                 f"runner_w_mm ({self.runner_w_mm}) must be ≤ plate_w_mm ({self.plate_w_mm})"
             )
-        if self.runner_edge_flat_mm > self.runner_ramp_end_mm + eps:
-            raise ValueError(
-                f"runner_edge_flat_mm ({self.runner_edge_flat_mm}) must be ≤ "
-                f"runner_ramp_end_mm ({self.runner_ramp_end_mm})"
-            )
         r_end = self.runner_end_d_mm / 2.0
         if r_end > self.runner_len_mm + eps:
             raise ValueError(
                 f"runner_end_d_mm / 2 ({r_end}) must be ≤ runner_len_mm ({self.runner_len_mm}); "
                 f"the round end must not reach into the product"
             )
-        if self.apex_depth_mm < self.runner_len_mm - r_end - eps:
+        if self.runner_ramp_on and self.runner_edge_flat_mm > self.ramp_end_depth_mm + eps:
+            raise ValueError(
+                f"runner_edge_flat_mm ({self.runner_edge_flat_mm}) must be ≤ the ramp's deep end "
+                f"({self.ramp_end_depth_mm:g}, runner_ramp_end_mm = {self.runner_ramp_end_mm})"
+            )
+        if self.runner_shape == "pentagon":
+            if self.side_len_mm > self.runner_len_mm + r_end + eps:
+                raise ValueError(
+                    f"side_len_mm ({self.side_len_mm}) must be ≤ runner_len_mm + runner_end_d_mm / 2 "
+                    f"({self.runner_len_mm + r_end:g}); a corner below the round end's bottom "
+                    f"would turn the slants upward"
+                )
+            corner_dist = math.hypot(0.5 * self.runner_w_mm, self.runner_len_mm - self.side_len_mm)
+            if corner_dist <= r_end + eps:
+                raise ValueError(
+                    f"the corners (runner_w_mm / 2 = {0.5 * self.runner_w_mm:g} off the axis) must "
+                    f"lie outside the round end (R {r_end:g}) for the slants to be tangent to it"
+                )
+        elif self.apex_depth_mm < self.runner_len_mm - r_end - eps:
             raise ValueError(
                 f"the flanks meet at depth {self.apex_depth_mm:.2f} (runner_w_mm / 2 · "
                 f"tan(fan_flank_deg)) which is above the round end's top "
@@ -197,6 +246,36 @@ class FanRunnerPlateConfig:
                 )
 
     # ----- derived quantities -----
+    @property
+    def ramp_end_depth_mm(self) -> float:
+        """The ramp's deep end below the product edge: ``runner_ramp_end_mm``,
+        or the top of the round end (``runner_len − runner_end_d / 2``) when
+        that is ``None``."""
+        if self.runner_ramp_end_mm is None:
+            return self.runner_len_mm - self.runner_end_d_mm / 2.0
+        return self.runner_ramp_end_mm
+
+    @property
+    def pentagon_tangent_mm(self) -> tuple[float, float]:
+        """Gate 2: ``(x, depth)`` of the right slant's tangent point on the
+        round end, ``x`` from the axis, ``depth`` below the product edge (the
+        left one is the mirror image). The lower of the two tangents from the
+        corner ``(runner_w/2, side_len)``."""
+        r_end = self.runner_end_d_mm / 2.0
+        vx = 0.5 * self.runner_w_mm
+        vy = self.runner_len_mm - self.side_len_mm  # corner above the axis: > 0
+        phi = math.atan2(vy, vx)
+        theta = phi - math.acos(min(1.0, r_end / math.hypot(vx, vy)))
+        x_t = max(0.0, r_end * math.cos(theta))
+        return x_t, self.runner_len_mm - r_end * math.sin(theta)
+
+    @property
+    def pentagon_slant_deg(self) -> float:
+        """Gate 2: slant angle to the product edge line (follows from
+        ``side_len`` and the round end; not an input)."""
+        x_t, d_t = self.pentagon_tangent_mm
+        return math.degrees(math.atan2(d_t - self.side_len_mm, 0.5 * self.runner_w_mm - x_t))
+
     @property
     def apex_depth_mm(self) -> float:
         """Depth below the product edge where the extended flanks meet on the axis."""
@@ -259,8 +338,11 @@ class FanRunnerPlateConfig:
 
     def runner_thickness_at_depth(self, depth_mm: np.ndarray | float) -> np.ndarray | float:
         """Runner thickness profile: ``runner_edge_thk`` on the edge band, a
-        linear ramp to ``runner_thk`` at ``runner_ramp_end``, then constant."""
-        ramp_len = self.runner_ramp_end_mm - self.runner_edge_flat_mm
+        linear ramp to ``runner_thk`` at the ramp's deep end, then constant;
+        with the ramp off, a step at the band's end. The round-end override
+        (``runner_end_thk``) is the builder's, not part of this profile."""
+        ramp_end = self.ramp_end_depth_mm if self.runner_ramp_on else self.runner_edge_flat_mm
+        ramp_len = ramp_end - self.runner_edge_flat_mm
         if ramp_len > 1e-12:
             t = np.clip(
                 (np.asarray(depth_mm, dtype=float) - self.runner_edge_flat_mm) / ramp_len, 0.0, 1.0
@@ -296,11 +378,25 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
     r2_axis = (xx - cx) ** 2 + (yy - y_axis) ** 2
     dd = y_edge - yy  # depth below the product edge
 
-    # --- silhouette: triangle from the edge ∪ round-end disc ---
-    half_w_at_depth = 0.5 * cfg.runner_w_mm * (1.0 - dd / apex)
-    in_tri = (dd >= 0.0) & (dd <= apex) & (ax <= half_w_at_depth)
     in_end = r2_axis <= r_end**2
-    in_runner = in_tri | in_end
+    if cfg.runner_shape == "pentagon":
+        # --- silhouette: convex hull of the side rectangle and the disc ---
+        half_w = 0.5 * cfg.runner_w_mm
+        s = cfg.side_len_mm
+        x_t, d_t = cfg.pentagon_tangent_mm
+        # slant from the corner (half_w, s) to the tangent point (x_t, d_t)
+        run = max(half_w - x_t, 1e-12)
+        d_slant = s + (half_w - ax) * (d_t - s) / run
+        in_side = (ax >= x_t) & (ax <= half_w) & (dd >= 0.0) & (dd <= d_slant)
+        # between the tangent points the bottom is the disc's arc
+        arc = cfg.runner_len_mm + np.sqrt(np.clip(r_end**2 - ax**2, 0.0, None))
+        in_mid = (ax < x_t) & (dd >= 0.0) & (dd <= arc)
+        in_runner = in_side | in_mid | in_end
+    else:
+        # --- silhouette: triangle from the edge ∪ round-end disc ---
+        half_w_at_depth = 0.5 * cfg.runner_w_mm * (1.0 - dd / apex)
+        in_tri = (dd >= 0.0) & (dd <= apex) & (ax <= half_w_at_depth)
+        in_runner = in_tri | in_end
     in_x_plate = (xx >= x_left) & (xx <= x_left + cfg.plate_w_mm)
     in_plate = (yy > y_edge) & (yy <= y_top) & in_x_plate
     mask = in_runner | in_plate
@@ -324,6 +420,8 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
     thk = np.zeros_like(xx, dtype=float)
     runner_thk = np.asarray(cfg.runner_thickness_at_depth(dd), dtype=float)
     thk[in_runner] = runner_thk[in_runner]
+    if cfg.runner_end_thk_mm is not None:
+        thk[in_end] = cfg.runner_end_thk_mm
 
     # balancer: base on the product edge line, apex balancer_h toward the
     # sprue; half-width grows linearly apex → base; a cut never adds material
@@ -352,7 +450,7 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
         mask=mask,
         thickness_mm=thk,
         cell_size_mm=dx,
-        label="fan_runner_plate",
+        label="fan_runner_plate" if cfg.runner_shape == "triangle" else "pentagon_runner_plate",
         # ICM squeezes only the t4 body; the rim and the runner are fixed
         compression_mask=in_inner & mask,
         product_mask=in_plate & mask,
