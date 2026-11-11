@@ -76,6 +76,7 @@ from scipy.ndimage import label as ndi_label
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import splu
 
+from .layer_heat import advect, conduct, flow_shares, layer_grid
 from .materials import Material
 from .packing import freeze_age_s
 
@@ -210,6 +211,7 @@ class PackingSolve:
     cell_size_mm: float = (
         0.0  # cell size the march ran on (coarser than the maps' grid if coarsened)
     )
+    thermal: str = "series"  # temperature model: "series" (melt age) or "layers" (carried state)
     frame_times_s: np.ndarray = field(default_factory=lambda: np.zeros(0))
     frame_pressure_Pa: np.ndarray = field(default_factory=lambda: np.zeros((0, 0, 0)))
 
@@ -242,6 +244,8 @@ def solve_packing(
     start_pressure_Pa: float = 1.0e6,
     switch_fill_fraction: float = 1.0,
     max_inflow_m3_s: float | None = None,
+    thermal: str = "series",
+    initial_theta: np.ndarray | None = None,
     progress: Callable[[float, float], None] | None = None,
 ) -> PackingSolve:
     """March from the V/P switch-over until nothing flows.
@@ -255,6 +259,13 @@ def solve_packing(
     ``max_inflow_m3_s`` is the most the machine delivers (its injection rate):
     the gate pressure stays below the holding pressure while that would draw
     more. ``None`` puts the full holding pressure on the gate at once.
+    ``thermal`` picks the temperature model: ``"series"`` reads each cell's
+    profile off its melt age (the slab series), ``"layers"`` carries the
+    profile as a state (:mod:`core.layer_heat`): conduction to the walls, the
+    heat the flow carries from cell to cell, viscous heating; what comes in
+    through the gate is at the melt temperature. ``initial_theta``
+    ``(ny, nx, n_z)`` is that state at the switch (from a fill that carried
+    it); without it the state starts from the slab series at the arrival time.
     ``progress(t, end_time)`` is called after every time step.
     ``end_time_s`` defaults to the later of the holding time and the moment
     the last cell's centre solidifies. The pressure field is kept at every
@@ -266,6 +277,11 @@ def solve_packing(
         raise ValueError(f"material {material.key} has no pvT data")
     if hold_pressure_Pa < 0.0 or hold_time_s < 0.0:
         raise ValueError("hold pressure and time must be >= 0")
+    if thermal not in ("series", "layers"):
+        raise ValueError(f"thermal must be 'series' or 'layers' (got {thermal!r})")
+    layered = thermal == "layers"
+    if initial_theta is not None and not layered:
+        raise ValueError("initial_theta needs thermal='layers'")
     mask = np.asarray(mask, dtype=bool)
     thk = np.asarray(thickness_mm, dtype=float)
     t_arr2d = np.asarray(arrival_time_s, dtype=float)
@@ -327,8 +343,31 @@ def solve_packing(
     is_gate = np.zeros(n, dtype=bool)
     is_gate[gate_idx] = True
 
-    def temperatures(t: float) -> tuple[np.ndarray, np.ndarray]:
-        theta = slab_theta(alpha * (t_arr + t) / h**2, n_z)
+    grid = layer_grid(n_z)
+    fourier_rate = alpha / h**2
+    if initial_theta is not None:
+        start = np.asarray(initial_theta, dtype=float)
+        if start.shape != (*mask.shape, n_z):
+            raise ValueError(f"initial_theta must be {(*mask.shape, n_z)}, got {start.shape}")
+        theta_state = np.clip(start[mask], 0.0, None)
+        if not np.all(np.isfinite(theta_state[full_at_switch])):
+            raise ValueError("initial_theta has no value in a cell that is full at the switch")
+        theta_state = np.where(np.isfinite(theta_state), theta_state, 1.0)
+    else:
+        theta_state = slab_theta(alpha * t_arr / h**2, n_z)
+    # a cell that holds no melt yet has no profile of its own: it stands for
+    # the melt that will come in, and takes that melt's temperature when it does
+    theta_state[~full_at_switch] = 1.0
+
+    def temperatures(t: float, dt: float, held: np.ndarray):
+        """Profiles at the end of a step: ``t`` after the switch, ``dt`` after
+        the state. ``held`` is the mass in the cells before the step."""
+        if layered:
+            theta = np.where(
+                (held > 0.0)[:, None], conduct(theta_state, fourier_rate * dt, grid), theta_state
+            )
+        else:
+            theta = slab_theta(alpha * (t_arr + t) / h**2, n_z)
         return theta, float(T_mold_K) + theta * dT_melt
 
     def mean_density(iso, p: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -403,17 +442,21 @@ def solve_packing(
         d_face = np.where(both, 2.0 * (r_j**2 * d_i + r_i**2 * d_j), 0.0)
         share = np.where(grad > 0.0, (along / np.where(grad > 0.0, grad, 1.0)) ** 2, 1.0)
         rho_f = 0.5 * (rho[f_i] + rho[f_j])
-        return rho_f * s_face, rho_f * (s_face + d_face * share), du, slope_phi
+        return rho_f * s_face, rho_f * (s_face + d_face * share), du, slope_phi, np.hypot(gx, gy)
 
     v_room = float(pvt.specific_volume(T_room_K, 0.0))
     t_freeze = freeze_age_s(thk[mask], alpha, solid_fraction) - t_arr  # after the switch
+    # With the layered state the flow can keep a centre molten past the slab's
+    # own time: an end the caller did not set is put off while one still is.
+    open_end = end_time_s is None and layered
     if end_time_s is None:
         end_time_s = max(float(hold_time_s), float(np.max(t_freeze))) * 1.02 + 1e-3
+    end_limit = 3.0 * end_time_s
 
     if dt_max_s is None:
         dt_max_s = max(end_time_s / 60.0, 0.1)
 
-    _, T = temperatures(0.0)
+    _, T = temperatures(0.0, 0.0, np.zeros(n))
     u = np.where(full_at_switch, float(start_pressure_Pa), _EMPTY_U)
     rho0, _ = mean_density(pvt.at_temperature(T, _TRANSITION_BAND_K), np.maximum(u, 0.0))
     mass = np.where(full_at_switch, rho0 * vol, 0.0)
@@ -422,7 +465,11 @@ def solve_packing(
 
     peak = np.maximum(u, 0.0)
     p_freeze = np.full(n, np.nan)
-    p_freeze[t_freeze <= 0.0] = peak[t_freeze <= 0.0]
+    if layered:
+        solid_now = full_at_switch & (theta_state[:, 0] <= solid_fraction)
+    else:
+        solid_now = t_freeze <= 0.0
+    p_freeze[solid_now] = peak[solid_now]
     times = [0.0]
     clamp = [float(peak.sum()) * dx * dx]
     added = [0.0]
@@ -441,7 +488,7 @@ def solve_packing(
         """One implicit step with the gate cells held at ``p_gate`` (``None``:
         gate closed); returns ``(u, mass, gate_inflow_kg, converged, iterations)``."""
         gate_open = p_gate is not None
-        theta_n, T_n = temperatures(t_new)
+        theta_n, T_n = temperatures(t_new, dt, mass_old)
         iso = pvt.at_temperature(T_n, _TRANSITION_BAND_K)
         rho_z, slope_z = mean_density(iso, np.zeros(n))
         weight = quad * inverse_viscosity(theta_n, T_n)
@@ -468,7 +515,7 @@ def solve_packing(
             rho, slope = mean_density(iso, np.maximum(u_it, 0.0))
             m_fun = np.where(on, rho * vol, full_mass + soft * u_it)
             dm = np.where(on, slope * vol, soft)
-            g_face, k_face, dp, slope_phi = face_flow(weight, rho, u_it)
+            g_face, k_face, dp, slope_phi, _ = face_flow(weight, rho, u_it)
             flow = g_face * dp  # mass rate i ← j
             net = np.bincount(f_i, flow, minlength=n) - np.bincount(f_j, flow, minlength=n)
             res = m_fun - mass_old - dt * net
@@ -515,15 +562,41 @@ def solve_packing(
         rho, _ = mean_density(iso, np.maximum(u_it, 0.0))
         mass_new = np.where(on, rho * vol, full_mass + soft * u_it)
         inflow = 0.0
-        if gate_open:
-            g_face, _, dp, _ = face_flow(weight, rho, u_it)
+        theta_new = None
+        from_gate = np.zeros(n)
+        if gate_open or layered:
+            g_face, _, dp, _, grad = face_flow(weight, rho, u_it)
             flow = g_face * dp
+        if gate_open:
             net = np.bincount(f_i, flow, minlength=n) - np.bincount(f_j, flow, minlength=n)
             # what left the gate cells into the cavity, plus what the gate cells took up
-            inflow = float(
-                -dt * net[gate_idx].sum() + (mass_new[gate_idx] - mass_old[gate_idx]).sum()
+            from_gate[gate_idx] = -dt * net[gate_idx] + (mass_new[gate_idx] - mass_old[gate_idx])
+            inflow = float(from_gate.sum())
+        if layered:
+            # the heat the step's flow carried, layer by layer, and what it dissipated
+            x = np.clip(
+                (np.log(np.maximum(grad, 1e-300))[:, None] + ln_arm - ln_s0) * inv_step,
+                0.0,
+                last_bin + 1.0,
             )
-        return u_it, mass_new, inflow, converged, used
+            k = np.minimum(x.astype(np.intp), last_bin)
+            w = x - k
+            inv_eta = inverse_viscosity(theta_n, T_n) * np.exp(
+                ln_f_tab[k] * (1.0 - w) + ln_f_tab[k + 1] * w
+            )
+            # (the melt that comes in through the gate is at the melt temperature)
+            theta_new = advect(
+                theta_n,
+                flow_shares(inv_eta, grid),
+                mass_old,
+                f_j,
+                f_i,
+                flow * dt,
+                u0 < 0.0,
+                grid,
+                source=np.maximum(from_gate, 0.0),
+            )
+        return u_it, mass_new, inflow, converged, used, theta_new
 
     # The machine cannot deliver melt faster than ``max_inflow_m3_s``: while
     # the holding pressure would draw more than that, the gate pressure is
@@ -548,7 +621,7 @@ def solve_packing(
             p_try = float(hold_pressure_Pa)
         tries = 0
         while True:
-            u_new, mass_new, inflow, ok, used = step(
+            u_new, mass_new, inflow, ok, used, theta_new = step(
                 u, mass, t + dt_try, dt_try, p_try if gate_open else None
             )
             if not ok and dt_try > 1e-5:
@@ -572,9 +645,21 @@ def solve_packing(
         u, mass = u_new, mass_new
         p = np.maximum(u, 0.0)
         peak = np.maximum(peak, p)
-        just_frozen = np.isnan(p_freeze) & (t_freeze <= t)
-        p_freeze[just_frozen] = p[just_frozen]
         late_fill[np.isnan(late_fill) & (u >= 0.0)] = t
+        if layered:
+            theta_state = theta_new
+            solid_now = ~np.isnan(late_fill) & (theta_state[:, 0] <= solid_fraction)
+            if (
+                open_end
+                and t >= end_time_s - 1e-12
+                and not solid_now[~np.isnan(late_fill)].all()
+                and end_time_s < end_limit
+            ):
+                end_time_s = min(end_time_s + dt_max_s, end_limit)  # a centre is still molten
+        else:
+            solid_now = t_freeze <= t
+        just_frozen = np.isnan(p_freeze) & solid_now
+        p_freeze[just_frozen] = p[just_frozen]
         times.append(t)
         gate_hist.append(p_try if gate_open else 0.0)
         clamp.append(float(p.sum()) * dx * dx)
@@ -632,6 +717,7 @@ def solve_packing(
         unconverged_steps=unconverged,
         rate_cap_exceeded_steps=over_rate,
         cell_size_mm=float(cell_size_mm),
+        thermal=thermal,
         newton_iterations=counter[0],
         frame_times_s=np.array(frame_times),
         frame_pressure_Pa=frame_stack,

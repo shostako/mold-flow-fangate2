@@ -75,6 +75,32 @@ class MarchFillResult:
     complete: bool
     volume_injected_m3: float
     volume_held_m3: float
+    stalled: bool = False  # stopped at the pressure limit with the rate fallen away
+    pressure_limited_steps: int = 0  # steps the gate spent at the pressure limit
+    gate_pressure_max_Pa: float = 0.0  # highest gate pressure the injection needed
+
+
+@dataclass
+class MarchStep:
+    """What one step of :func:`march_fill` did, handed to ``on_step``.
+
+    Arrays are flat over the whole grid (``ny·nx``); faces are pairs of flat
+    cell indices.
+    """
+
+    t_s: float  # time at the start of the step
+    dt_s: float
+    face_a: np.ndarray
+    face_b: np.ndarray
+    moved_m3: np.ndarray  # melt that crossed each face over the step, positive a → b
+    held_m3: np.ndarray  # melt in each cell before the step
+    full: np.ndarray  # cells that were full before the step
+    newly: np.ndarray  # flat indices of the cells that became full in the step
+    gate_in_m3: np.ndarray  # melt the machine delivered into each gate cell over the step
+    # the pressure the delivery alone needed in the step, without the push that
+    # moves a cell's surplus on (that one scales as 1/dt); zero outside the full cells
+    pressure_Pa: np.ndarray
+    volume_injected_m3: float  # delivered by the end of the step
 
 
 def _faces(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -101,6 +127,9 @@ def march_fill(
     cfl: float = 1.0,
     breakpoints_s: tuple[float, ...] = (),
     max_steps: int = 200_000,
+    on_step: Callable[[MarchStep], np.ndarray | None] | None = None,
+    pressure_limit_Pa: float | None = None,
+    stall_rate_fraction: float = 0.01,
 ) -> MarchFillResult:
     """Advance the melt front from the gates until the cavity is full.
 
@@ -122,6 +151,22 @@ def march_fill(
     breakpoints_s
         Times where the delivery rate changes (a staged profile's switches). A
         step never crosses one, and the step after it is sized on the new rate.
+    on_step
+        Called after every step with a :class:`MarchStep`. It may return the
+        conductance of every cell (flat, ``ny·nx``) as it is now: the full
+        cells take it, instead of keeping the value they got when the melt
+        reached them. This is how a caller that carries the temperature as a
+        state lets the cells behind the front go on cooling.
+    pressure_limit_Pa
+        The most the machine puts on the gate. While the programmed rate would
+        need more, the gate is held at the limit and the melt comes in at
+        whatever rate that gives (the screw falls behind its programme, and
+        does not catch up). ``None``: no limit, the volume is delivered
+        whatever it takes.
+    stall_rate_fraction
+        With a pressure limit, the march stops as stalled once the rate at the
+        limit has fallen below this fraction of the programmed rate; the cells
+        still not full keep ``t_arr = NaN`` and ``complete`` is ``False``.
     """
     if not 0.0 < cfl <= 1.0:
         raise ValueError(f"cfl must be in (0, 1] (got {cfl})")
@@ -152,6 +197,12 @@ def march_fill(
     p_report = np.zeros(n)
     cap_total = float(C[m].sum())
     v_prev_inj = float(injected_volume_m3(t))
+    # with a pressure limit the screw can fall behind its programme: the volume
+    # delivered is then counted on its own, and the programme only gives the rate
+    lag_m3 = 0.0
+    limited_steps = 0
+    stalled = False
+    p_report_max = 0.0
     bps = sorted(b for b in breakpoints_s if b > t)
     probe = min(float(dt_max_s), 1e-6 * max(abs(t), 1.0))
 
@@ -201,7 +252,7 @@ def march_fill(
         room_left = float(np.sum(C[m] - V[m]))
         if room_left > ROOM_TOL * cap_total:
             dt = max(min(dt, room_left / rate_ahead(t)), 1e-12)
-            v_next = float(injected_volume_m3(t + dt))
+            v_next = float(injected_volume_m3(t + dt)) - lag_m3
         else:
             v_next = v_prev_inj
         q_total = (v_next - v_prev_inj) / dt
@@ -265,12 +316,23 @@ def march_fill(
         if out1 <= 0:
             raise RuntimeError("the gate cells have no open face to the melt")
         p_g = (q_total - out0) / out1
+        if pressure_limit_Pa is not None and p_g > pressure_limit_Pa and q_total > 0:
+            # the machine is at its limit: the gate stays there, the rate follows
+            p_g = float(pressure_limit_Pa)
+            q_limited = max(out0 + p_g * out1, 0.0)
+            lag_m3 += (q_total - q_limited) * dt
+            v_next = v_prev_inj + q_limited * dt
+            limited_steps += 1
+            if q_limited < stall_rate_fraction * q_total:
+                stalled = True
+            q_total = q_limited
         p = p0 + p_g * p1
         if q_total > 0:
             # the pressure the injection alone needs to reach the front, without the
             # artificial push of the surplus terms (which scale as 1/dt and dominate
             # a short final step): what the end-of-fill pressure map reports
             p_report = (q_total / out1) * p1
+            p_report_max = max(p_report_max, q_total / out1)
 
         flux = Sf * (p[fa] - p[fb])  # a -> b
         inflow = np.zeros(n)
@@ -287,11 +349,34 @@ def march_fill(
             frac = np.clip((C[newly] - V_old[newly]) / rate, 0.0, dt)
             t_arr[newly] = t + frac
             S[newly] = conductance(newly, t_arr[newly])
+        if on_step is not None:
+            gate_in = np.zeros(n)
+            gate_in[g] = np.maximum(-inflow[g], 0.0) * dt
+            S_now = on_step(
+                MarchStep(
+                    t_s=t,
+                    dt_s=dt,
+                    face_a=fa,
+                    face_b=fb,
+                    moved_m3=flux * dt,
+                    held_m3=V_old,
+                    full=full,
+                    newly=newly,
+                    gate_in_m3=gate_in,
+                    pressure_Pa=(max(q_total, 0.0) / out1) * p1,
+                    volume_injected_m3=v_next,
+                )
+            )
+            if S_now is not None:
+                behind = m & (V >= C * FULL_REL)
+                S[behind] = np.asarray(S_now, dtype=float)[behind]
         t += dt
         if bps and abs(bps[0] - t) <= 1e-9 * max(abs(t), dt_max_s):
             t = bps[0]  # land on the switch, so the rate read after it is the new stage's
         v_prev_inj = v_next
         steps += 1
+        if stalled:
+            break
 
         # the next step's inflow scales with the delivery rate (a switch just passed)
         r_next = rate_ahead(t)
@@ -306,6 +391,9 @@ def march_fill(
         complete=complete,
         volume_injected_m3=v_prev_inj,
         volume_held_m3=float(V[m].sum()),
+        stalled=stalled,
+        pressure_limited_steps=limited_steps,
+        gate_pressure_max_Pa=p_report_max,
     )
 
 

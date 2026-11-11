@@ -63,6 +63,7 @@ import numpy as np
 from .geometry import Geometry
 from .injection_profile import InjectionProfile
 from .materials import Material, cross_wlf_viscosity
+from .melt_state import MeltState
 from .multilayer_thermal import (
     brinkman_number,
     neumann_layer_temperatures,
@@ -75,7 +76,7 @@ from .solver import (
     check_gate_reachability,
     weld_score_from_angle,
 )
-from .transient_fill import march_fill
+from .transient_fill import MarchStep, march_fill
 
 
 @dataclass
@@ -102,6 +103,11 @@ class MultilayerFlowResult(FlowResult):
     # coupling at all.
     layer_shear_heating_dT_K: np.ndarray | None = None  # (N, ny, nx) [K]
     layer_brinkman_number: np.ndarray | None = None  # (N, ny, nx) [-]
+    # ``thermal_model="energy"``: the carried state, θ = (T − T_mold)/(T_melt − T_mold)
+    # on the half thickness, centre → wall (``core.layer_heat``). NaN outside the cavity.
+    thermal_theta_end: np.ndarray | None = None  # (ny, nx, n_z) at the end of the fill
+    #: fill fraction → (time [s], θ (ny, nx, n_z)): the state when that share was delivered
+    thermal_snapshots: dict | None = None
 
 
 def _uniform_layer_zeta(num_layers: int) -> np.ndarray:
@@ -324,6 +330,27 @@ class MultilayerHeleShawSolver:
     #: march: the longest step as a fraction of the fill time
     march_dt_max_fraction: float = field(default=0.005, kw_only=True)
 
+    # ----- how the layers' temperature is found (march only) -----
+    # "arrival": read off the time the melt reached the cell, as a slab of the
+    # cell's own thickness that has cooled for that long (the Neumann profile).
+    # "energy": carried as a state and advanced every step (core.layer_heat):
+    # conduction to the walls, the heat the flow carries from cell to cell,
+    # viscous heating. The first breaks down where the melt changes thickness
+    # on its way -- melt that crossed a thick plate and enters a thin rim late
+    # is read as if it had cooled in the rim all along.
+    thermal_model: str = field(default="arrival", kw_only=True)
+    #: energy: layers over the half thickness (Gauss nodes)
+    energy_layers: int = field(default=16, kw_only=True)
+    #: energy: fill fractions (by volume delivered) at which the state is kept,
+    #: for a holding solve that takes over at a V/P switch
+    thermal_snapshot_fractions: tuple[float, ...] = field(default=(), kw_only=True)
+    #: energy: the most the machine puts on the gate [Pa]. With the state carried,
+    #: a thin section that filled early is solid a second later; what lies behind
+    #: it cannot be reached at any pressure, and a march that delivers the volume
+    #: whatever it takes breaks down there. At the limit the fill slows, and
+    #: stops as a short shot when it stalls.
+    injection_pressure_limit_Pa: float | None = field(default=200.0e6, kw_only=True)
+
     # Internal helper, populated in __post_init__.
     _base: HeleShawSolver = field(init=False, repr=False)
     # The last march, keyed by everything it read: the two-phase model asks for
@@ -340,6 +367,12 @@ class MultilayerHeleShawSolver:
             raise ValueError(
                 f"march_dt_max_fraction must be in (0, 1] (got {self.march_dt_max_fraction})"
             )
+        if self.thermal_model not in ("arrival", "energy"):
+            raise ValueError(
+                f"thermal_model must be 'arrival' or 'energy' (got {self.thermal_model!r})"
+            )
+        if self.thermal_model == "energy" and self.fill_method != "march":
+            raise ValueError("thermal_model='energy' needs fill_method='march'")
         self._base = HeleShawSolver(
             geometry=self.geometry,
             material=self.material,
@@ -479,6 +512,10 @@ class MultilayerHeleShawSolver:
                         self.shear_heating_enabled,
                         self.march_cfl,
                         self.march_dt_max_fraction,
+                        self.thermal_model,
+                        self.energy_layers,
+                        tuple(self.thermal_snapshot_fractions),
+                        self.injection_pressure_limit_Pa,
                     )
                 ),
             )
@@ -770,8 +807,71 @@ class MultilayerHeleShawSolver:
         V_mms = float(self.injection_velocity_mms)
         floor = float(self.shear_rate_floor_factor)
         h_flat = h_open.ravel()
+        energy = self.thermal_coupling and self.thermal_model == "energy"
+        on_step = None
 
-        if self.thermal_coupling:
+        if energy:
+            # The melt as a state on the cavity cells (core.melt_state): the layers'
+            # temperature and the flow each cell carries.
+            cav = np.flatnonzero(mask.ravel())
+            row = -np.ones(mask.size, dtype=np.int64)
+            row[cav] = np.arange(cav.size)
+            melt = MeltState(
+                h_flat[cav] * 1e-3,
+                dx * 1e-3,
+                self.material,
+                float(self.melt_temperature_K),
+                float(self.mold_temperature_K),
+                solid_fraction=float(self.solidification_temperature_fraction),
+                n_z=int(self.energy_layers),
+                shear_heating_enabled=bool(self.shear_heating_enabled),
+            )
+            n_z = melt.grid.n_z
+            grid = melt.grid
+            # A cell solid through conducts nothing, and a full cell with no way in
+            # or out leaves the pressure solve singular: keep a trace (it passes
+            # nothing that counts, and the pressure limit ends the fill there).
+            S_trace = 1e-10 * melt.conductance()
+            T_mold = float(self.mold_temperature_K)
+            dT_span = float(self.melt_temperature_K) - T_mold
+            centre_at_arrival = np.full(cav.size, np.nan)
+            V_all = float(cell_volume[mask].sum()) * 1e-9
+            wanted = sorted(float(f) for f in self.thermal_snapshot_fractions)
+            snapshots: dict[float, tuple[float, np.ndarray]] = {}
+            faces: dict[str, np.ndarray] = {}
+            ny_, nx_ = mask.shape
+
+            def conductance(idx: np.ndarray, t_arr: np.ndarray) -> np.ndarray:
+                rows = row[idx]
+                return np.maximum(melt.conductance(rows), S_trace[rows])
+
+            def on_step(st: MarchStep) -> np.ndarray:
+                if not faces:
+                    faces["a"], faces["b"] = row[st.face_a], row[st.face_b]
+                    faces["along_x"] = (st.face_b - st.face_a) == 1
+                melt.advance(
+                    st.dt_s,
+                    faces["a"],
+                    faces["b"],
+                    st.moved_m3,
+                    st.held_m3[cav],
+                    st.full[cav],
+                    st.gate_in_m3[cav],
+                    st.pressure_Pa[st.face_b] - st.pressure_Pa[st.face_a],
+                    faces["along_x"],
+                )
+                if st.newly.size:
+                    centre_at_arrival[row[st.newly]] = melt.theta[row[st.newly], 0]
+                while wanted and st.volume_injected_m3 >= wanted[0] * V_all * (1.0 - 1e-9):
+                    f = wanted.pop(0)
+                    state = np.full((ny_, nx_, n_z), np.nan, dtype=np.float32)
+                    state.reshape(-1, n_z)[cav] = melt.theta
+                    snapshots[f] = (st.t_s + st.dt_s, state)
+                S_now = np.zeros(mask.size)
+                S_now[cav] = np.maximum(melt.conductance(), S_trace)
+                return S_now
+
+        elif self.thermal_coupling:
 
             def conductance(idx: np.ndarray, t_arr: np.ndarray) -> np.ndarray:
                 # the cells as an (n, 1) grid, so the grid-shaped helpers apply as they are
@@ -808,29 +908,60 @@ class MultilayerHeleShawSolver:
             dt_max_s=float(self.march_dt_max_fraction) * T_clock,
             cfl=float(self.march_cfl),
             breakpoints_s=breakpoints,
+            on_step=on_step,
+            pressure_limit_Pa=self.injection_pressure_limit_Pa if energy else None,
         )
-        if not res.complete:
+        if not res.complete and not res.stalled:
             raise RuntimeError(f"the march stopped after {res.n_steps} steps with cells unfilled")
         t_arr = res.t_arr_s
+        unreached = mask & np.isnan(t_arr)
+        if res.stalled:
+            # a short shot: the cells the melt did not reach take the time the fill
+            # stalled, so every map downstream still has a value, and are flagged
+            t_arr = np.where(unreached, res.t_end_s, t_arr)
         T_fill = float(np.nanmax(t_arr))
 
         layer_T_K = layer_eta = layer_gamma_dot = layer_shear_dT_K = layer_Brinkman = None
         short_shot_mask = None
+        theta_end = None
         if self.thermal_coupling:
             # the layer fields on the arrival times: the reading the τ fixed point reports
             ta = np.where(np.isnan(t_arr), 0.0, t_arr)
             layer_gamma_dot = poiseuille_shear_rates(
                 zeta_centers=zeta_centers, V_mms=V_mms, h_total_mm=h_open, floor_factor=floor
             )
-            layer_T_K, layer_shear_dT_K = self._layer_temperatures(
-                ta, h_open, zeta_centers, alpha, layer_gamma_dot
-            )
+            if energy:
+                # the state at the end of the fill, read at the reporting layers' depths
+                theta_end = np.full((ny_, nx_, n_z), np.nan, dtype=np.float32)
+                theta = melt.theta
+                theta_end.reshape(-1, n_z)[cav] = theta
+                depth = np.abs(zeta_centers - 0.5)
+                nodes = np.concatenate([[0.0], grid.xi, [0.5]])
+                layer_T_K = np.full((zeta_centers.size, ny_, nx_), T_mold)
+                for k, d in enumerate(depth):
+                    j = int(np.clip(np.searchsorted(nodes, d) - 1, 0, n_z))
+                    w = (d - nodes[j]) / (nodes[j + 1] - nodes[j])
+                    # node 0 is the centre (the first layer's value), node n_z+1 the wall (θ = 0)
+                    lo = theta[:, max(j - 1, 0)]
+                    hi = theta[:, j] if j < n_z else np.zeros(cav.size)
+                    layer_T_K[k].reshape(-1)[cav] = T_mold + dT_span * ((1.0 - w) * lo + w * hi)
+            else:
+                layer_T_K, layer_shear_dT_K = self._layer_temperatures(
+                    ta, h_open, zeta_centers, alpha, layer_gamma_dot
+                )
             T_bulk = 0.7 * self.melt_temperature_K + 0.3 * self.mold_temperature_K
             T_eval = np.where(~mask[None, :, :], T_bulk, layer_T_K)
             layer_eta = np.asarray(
                 cross_wlf_viscosity(self.material, T_eval, layer_gamma_dot, 0.0), dtype=float
             )
-            short_shot_mask = mask & (layer_T_K[self.num_layers // 2] <= T_solid_K)
+            if energy:
+                # a cell whose centre was already solid when the melt filled it: the
+                # march delivers the volume whatever it takes, a machine would not
+                short = np.zeros(mask.size, dtype=bool)
+                short[cav] = centre_at_arrival <= float(self.solidification_temperature_fraction)
+                short_shot_mask = (mask & short.reshape(mask.shape)) | unreached
+            else:
+                short_shot_mask = mask & (layer_T_K[self.num_layers // 2] <= T_solid_K)
             layer_Brinkman = brinkman_number(
                 eta_per_layer_Pa_s=layer_eta,
                 gamma_dot_per_layer_s_inv=layer_gamma_dot,
@@ -865,6 +996,15 @@ class MultilayerHeleShawSolver:
             "t_arr": t_arr,
             "p_end": res.pressure_end_Pa,
             "march_steps": res.n_steps,
+            "thermal_theta_end": theta_end,
+            "thermal_snapshots": snapshots if energy else None,
+            "march_stalled": bool(res.stalled),
+            "march_unreached": unreached,
+            "march_pressure_limited_steps": int(res.pressure_limited_steps),
+            "march_gate_pressure_max_Pa": float(res.gate_pressure_max_Pa),
+            "march_volume_fraction": float(res.volume_held_m3 / (V_open * 1e-9)),
+            "energy_dissipated_J": float(melt.dissipated_J) if energy else 0.0,
+            "energy_heated_J": float(melt.heated_J) if energy else 0.0,
         }
 
     # ------------------------------------------------------------------
@@ -1013,6 +1153,14 @@ class MultilayerHeleShawSolver:
                     "march_steps": int(st["march_steps"]),
                     "march_cfl": float(self.march_cfl),
                     "march_dt_max_fraction": float(self.march_dt_max_fraction),
+                    "thermal_model": self.thermal_model,
+                    "march_stalled": bool(st.get("march_stalled", False)),
+                    "march_unreached_cells": int(np.sum(st["march_unreached"])),
+                    "march_pressure_limited_steps": int(st["march_pressure_limited_steps"]),
+                    "march_gate_pressure_max_MPa": float(st["march_gate_pressure_max_Pa"]) / 1e6,
+                    "march_volume_fraction": float(st["march_volume_fraction"]),
+                    "energy_dissipated_J": float(st["energy_dissipated_J"]),
+                    "energy_heated_J": float(st["energy_heated_J"]),
                 }
             )
         if layer_shear_dT_K is not None:
@@ -1082,4 +1230,6 @@ class MultilayerHeleShawSolver:
             layer_shear_rate_s_inv=layer_gamma_dot,
             layer_shear_heating_dT_K=layer_shear_dT_K,
             layer_brinkman_number=layer_Brinkman,
+            thermal_theta_end=st.get("thermal_theta_end"),
+            thermal_snapshots=st.get("thermal_snapshots"),
         )
