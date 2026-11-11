@@ -196,6 +196,9 @@ class PackingSolve:
     total_mass_kg: np.ndarray  # mass in the cavity at each step
     initial_mass_kg: float
     unconverged_steps: int = 0  # steps accepted at the smallest time step without converging
+    # steps the gate took in more than the machine rate (by over 10 %): the
+    # pressure that holds the rate down could not be found in the tries allowed
+    rate_cap_exceeded_steps: int = 0
     newton_iterations: int = 0  # linear solves over the whole march
     switch_fill_fraction: float = 1.0  # share of the volume filled before the V/P switch
     switch_time_s: float = 0.0  # fill time at the switch (the march's t = 0)
@@ -431,6 +434,7 @@ def solve_packing(
     frames = [peak.copy()] if keep_frames else []
     frame_times = [0.0] if keep_frames else []
     unconverged = 0
+    over_rate = 0
     counter = [0]
 
     def step(u0, mass_old, t_new, dt, p_gate):
@@ -545,11 +549,14 @@ def solve_packing(
             rate = inflow / (rho_gate * dt_try)
             if gate_open and rate_cap is not None and rate > 1.1 * rate_cap and tries < 6:
                 # flow ∝ Δp^(1/n) at worst: bring the pressure down by the rate ratio to the n
-                p_try = max(p_try * (rate_cap / rate) ** max(float(material.n), 0.2), 1.0e4)
+                p_try = max(p_try * (rate_cap / rate) ** max(float(material.n), 0.2), 1.0e2)
                 tries += 1
                 continue
             break
         unconverged += 0 if ok else 1
+        if gate_open and rate_cap is not None and rate > 1.1 * rate_cap:
+            # accepted as it is, but counted: the answer took in melt faster than the machine
+            over_rate += 1
         if gate_open:
             p_gate_now = p_try
         was_open_until = gate_open and abs(t + dt_try - hold_time_s) < 1e-12
@@ -615,6 +622,7 @@ def solve_packing(
         total_mass_kg=np.array(total),
         initial_mass_kg=mass_initial,
         unconverged_steps=unconverged,
+        rate_cap_exceeded_steps=over_rate,
         cell_size_mm=float(cell_size_mm),
         newton_iterations=counter[0],
         frame_times_s=np.array(frame_times),

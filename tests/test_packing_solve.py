@@ -350,3 +350,22 @@ def test_end_time_before_the_gate_closes_is_not_overrun():
     )
     assert r.times_s[-1] <= 0.001 + 1e-12
     assert all(t <= end + 1e-12 for t, end in seen)
+
+
+def test_a_rate_the_pressure_cannot_hold_down_is_counted():
+    mask, thk, t_arr, gates, rate = _channel()
+    ok = _solve(mask, thk, t_arr, gates, 60e6, 3.0, max_inflow_m3_s=rate)
+    assert ok.rate_cap_exceeded_steps == 0
+    # a machine far slower than any gate pressure the solve may use
+    slow = _solve(
+        mask,
+        thk,
+        t_arr,
+        gates,
+        60e6,
+        0.2,
+        switch_fill_fraction=0.5,
+        max_inflow_m3_s=rate * 1e-9,
+        end_time_s=0.2,
+    )
+    assert slow.rate_cap_exceeded_steps > 0

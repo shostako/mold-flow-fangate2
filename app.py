@@ -1967,6 +1967,7 @@ if do_run:
                     "clamp_force_peak_kN": float(_hold.clamp_force_N.max()) / 1e3,
                     "end_time_s": float(_hold.times_s[-1]),
                     "unconverged_steps": int(_hold.unconverged_steps),
+                    "rate_cap_exceeded_steps": int(_hold.rate_cap_exceeded_steps),
                 }
         _skin_path: Path | None = None
         _core_path: Path | None = None
@@ -2402,6 +2403,11 @@ if "mfs_result" in st.session_state:
                     st.warning(
                         f"{_hi['unconverged_steps']} 刻みで反復が収束しないまま進めています。"
                         "数字は目安として見てください。"
+                    )
+                if _hi.get("rate_cap_exceeded_steps"):
+                    st.warning(
+                        f"{_hi['rate_cap_exceeded_steps']} 刻みで、送る量の上限より多く流れ込んだまま進めています"
+                        "（上限に収まるゲート圧が見つからなかった）。保圧の始めの圧力の上がり方は目安として見てください。"
                     )
                 _download("⬇ 縮みの地図 PNG", _hold_path_shown, "image/png", "dl_hold_png")
                 _download("⬇ 圧力の時間変化 PNG", _hold_hist_shown, "image/png", "dl_hold_hist_png")
