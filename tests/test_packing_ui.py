@@ -11,6 +11,7 @@ from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts
 
 ICM_NOTE = "射出圧縮成形 ON の解析では出しません"
+FRACTION_NOTE = "固化判定 fraction が 0 のときは出しません"
 
 
 def _run(at, *, icm: bool):
@@ -56,3 +57,26 @@ def test_compression_molding_explains_why_there_is_no_map():
     with zipfile.ZipFile(io.BytesIO(at.session_state["mfs_zip_bytes"])) as zf:
         names = zf.namelist()
         assert "packing_reach.png" not in names and "packing_reach.json" not in names
+
+
+def test_zero_solid_fraction_skips_the_estimate_and_keeps_the_fill_result():
+    """The multilayer model's slider goes down to 0, where the slab's centre
+    never reaches the solidification temperature: the estimate is skipped with
+    its reason, and the finished fill is still shown (Codex P2 on PR #18)."""
+    at = _app()
+    assert at.radio(key="wall_model").value == "multilayer"
+    at.checkbox(key="two_phase_on").set_value(False)
+    at.checkbox(key="icm_on").set_value(False).run()
+    sliders = [s for s in at.slider if str(s.label).startswith("固化判定 fraction")]
+    assert len(sliders) == 1
+    sliders[0].set_value(0.0).run()
+    at.button[0].click().run()
+    assert not at.exception
+    assert at.session_state["mfs_result"] is not None
+    assert at.session_state["mfs_pack_path"] is None
+    assert at.session_state["mfs_pack_rows"] is None
+    assert FRACTION_NOTE in texts(at)
+    assert ICM_NOTE not in texts(at)
+    with zipfile.ZipFile(io.BytesIO(at.session_state["mfs_zip_bytes"])) as zf:
+        names = zf.namelist()
+        assert "fill.gif" in names and "packing_reach.png" not in names

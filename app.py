@@ -403,6 +403,17 @@ def _load_db(schema_version: str = _MATERIAL_DB_SCHEMA_VERSION) -> MaterialDB:
 db = _load_db()
 material_keys = list(db.keys())
 
+# 「保圧が届く時間」を出さないときに結果ペインへ出す理由
+PACK_SKIP_ICM = (
+    "射出圧縮成形 ON の解析では出しません（圧縮が保圧の役をし、"
+    "キャビティの厚さも充填中に変わるため）。"
+    "通常成形（圧縮成形 OFF）で解析すると出ます。"
+)
+PACK_SKIP_FRACTION = (
+    "固化判定 fraction が 0 のときは出しません（厚さの中心が金型温度まで下がる時刻は"
+    "決まらないため）。0 より大きい値で解析すると出ます。"
+)
+
 
 # ----------------------- fan-runner plate: parametric inputs -----------------------
 _D = FanRunnerPlateConfig()  # Gate 1 = the drawing (docs/spec.md)
@@ -1709,9 +1720,18 @@ if do_run:
         )
         # 保圧が届く時間（見積り）。キャビティの厚さが動かない通常成形でだけ出す:
         # 射出圧縮は圧縮そのものが保圧の役をし、厚さも充填中に変わる。
+        # 出せないときは理由を残して充填の結果はそのまま見せる: ここで例外を出すと、
+        # 済んだ解析の結果も ZIP も画面に届かなくなる（Codex P2 on PR #18）。
         _pack_path: Path | None = None
         _pack_rows: list[dict] | None = None
-        if not icm:
+        _pack_skip: str | None = None
+        if icm:
+            _pack_skip = PACK_SKIP_ICM
+        elif not 0.0 < float(solid_fraction) < 1.0:
+            # 層別の「固化判定 fraction」は 0 まで選べる。0 は「金型温度まで下がったら固化」で、
+            # 板の中心がそこへ届く時刻は決まらない（無限大）
+            _pack_skip = PACK_SKIP_FRACTION
+        else:
             _pack = packing_reach(
                 geom.mask,
                 geom.thickness_mm,
@@ -1863,6 +1883,7 @@ if do_run:
         st.session_state["mfs_pack_path"] = _pack_path
         st.session_state["mfs_pack_rows"] = _pack_rows
         st.session_state["mfs_pack_solid_fraction"] = float(solid_fraction)
+        st.session_state["mfs_pack_skip"] = _pack_skip
         st.session_state["mfs_skin_path"] = _skin_path
         st.session_state["mfs_core_path"] = _core_path
         st.session_state["mfs_layer_T_grid_path"] = _layer_T_grid_path
@@ -2035,11 +2056,7 @@ if "mfs_result" in st.session_state:
             _pack_path_shown = st.session_state.get("mfs_pack_path")
             _pack_rows_shown = st.session_state.get("mfs_pack_rows")
             if _pack_path_shown is None or _pack_rows_shown is None:
-                st.info(
-                    "射出圧縮成形 ON の解析では出しません（圧縮が保圧の役をし、"
-                    "キャビティの厚さも充填中に変わるため）。"
-                    "通常成形（圧縮成形 OFF）で解析すると出ます。"
-                )
+                st.info(st.session_state.get("mfs_pack_skip") or PACK_SKIP_ICM)
             else:
                 st.image(str(_pack_path_shown))
                 _sf = float(st.session_state.get("mfs_pack_solid_fraction", 0.3))
