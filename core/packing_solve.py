@@ -503,7 +503,8 @@ def solve_packing(
             size = float(np.max(np.abs(u_next - u_it)))
             counter[0] += 1
             u_it = u_next
-            if size < 200.0:  # Pa
+            # (a cell just stopped on the kink has not been tried on its other side)
+            if size < 200.0 and not cross.any():  # Pa
                 converged = True
                 break
             # the factorisation is kept while it still converges fast, renewed when not

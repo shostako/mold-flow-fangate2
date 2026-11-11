@@ -410,3 +410,29 @@ def test_cells_at_the_kink_do_not_stall_the_newton_iteration():
     assert r.times_s[-1] == pytest.approx(9.0)
     assert r.unconverged_steps == 0
     assert r.newton_iterations < 2000
+
+
+def test_a_cell_stopped_on_the_kink_is_tried_on_its_other_side():
+    # A sealed cavity that starts a hair above zero pressure and cools: it has
+    # to end in the deficit branch (u < 0), not be accepted on the kink at 0.
+    mask = np.ones((1, 1), dtype=bool)
+    thk = np.full((1, 1), 3.0)
+    t_arr = np.zeros((1, 1))
+    r = solve_packing(
+        mask,
+        thk,
+        t_arr,
+        [(0, 0)],
+        2.0,
+        PMMA,
+        T_MELT,
+        T_MOLD,
+        60e6,
+        0.0,
+        start_pressure_Pa=100.0,
+        end_time_s=2.0,
+    )
+    assert r.unconverged_steps == 0
+    assert r.shrinkage[0, 0] > 0.0
+    # the mass the cell had at the switch is the mass it keeps (nothing flows)
+    assert r.total_mass_kg[-1] == pytest.approx(r.initial_mass_kg, rel=1e-9)
