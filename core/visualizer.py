@@ -949,16 +949,24 @@ def render_flash_risk_map(
         linewidths=0,
         zorder=3,
     )
-    labelled = [(f"{k}", sp, "black") for k, sp in enumerate(risk.spots, start=1)]
+    # the runner's spots crowd round the gate: they carry their tag only (the
+    # table lists their pressure)
+    labelled = [
+        (f"{k}: {sp.pressure_Pa / 1e6:.0f} MPa", sp, "black")
+        for k, sp in enumerate(risk.spots, start=1)
+    ]
     labelled += [(f"R{k}", sp, "0.45") for k, sp in enumerate(risk.runner_spots, start=1)]
-    for tag, spot, colour in labelled:
+    for text, spot, colour in labelled:
         ax.scatter(
             spot.x_mm, spot.y_mm, s=180, facecolors="none", edgecolors=colour, lw=1.4, zorder=4
         )
         ax.annotate(
-            f"{tag}: {spot.pressure_Pa / 1e6:.0f} MPa",
+            text,
             (spot.x_mm, spot.y_mm),
-            xytext=(6, 6),
+            # inward, so that a spot on the outline does not put its label off the plot
+            xytext=(8 if spot.x_mm <= 0.0 else -8, 8 if spot.y_mm <= 0.0 else -8),
+            ha="left" if spot.x_mm <= 0.0 else "right",
+            va="bottom" if spot.y_mm <= 0.0 else "top",
             textcoords="offset points",
             fontsize=8,
             zorder=5,

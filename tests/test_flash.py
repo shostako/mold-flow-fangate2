@@ -115,3 +115,19 @@ def test_pressure_after_the_centre_froze_does_not_count():
     # its time is after the switch, within the march
     assert np.all(r.molten_peak_time_s[mask] >= 0.0)
     assert np.all(r.molten_peak_time_s[mask] <= r.times_s[-1] + 1e-12)
+
+
+def test_the_map_is_drawn(tmp_path):
+    from core.visualizer import render_flash_risk_map
+
+    mask = np.ones((6, 10), dtype=bool)
+    thk = np.full(mask.shape, 2.0)
+    product = np.zeros(mask.shape, dtype=bool)
+    product[2:, :] = True
+    p = np.zeros(mask.shape)
+    p[0, :] = 80.0
+    p[-1, :] = np.linspace(20.0, 40.0, 10)
+    geom = _geom(mask, thk, product)
+    risk = flash_risk(geom, _fake_solve(p), n_spots=2, min_gap_mm=4.0)
+    out = render_flash_risk_map(SimpleNamespace(geometry=geom), risk, tmp_path / "flash.png")
+    assert out.exists() and out.stat().st_size > 1000
