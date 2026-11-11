@@ -63,6 +63,13 @@
 - Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期
 
+- **方針（2026-11-11、ユーザー）: この図面専用の道具から、いろんな形状に使える流動解析のアプリに仕上げる。** 新しい機能は形に依らない作りにする。
+  順番の案は 保圧が届く時間 → 圧力まわりの結果（ゲート圧の時間変化・最大射出圧・型締力・剪断の最大）→ 複数ゲートとバルブの順次開放 →
+  実物との照合と検証のページ → 保圧の段 2（pvT）。自由な形の入力は後回し（ユーザーの判断）
+- 保圧が届く時間（v0.13.0）: `core/packing.py`。充填の結果（到達時刻と肉厚）だけから読む見積りで、保圧の流れは解かない。通常成形（圧縮成形 OFF）のときだけ
+  結果ペインに出る。固化の判定は層別の `solid_fraction` をそのまま使う（壁面冷却モデルが層別でなくても既定の 0.3）。
+  UI テストは `tests/test_packing_ui.py`、状態は `mfs_pack_path` / `mfs_pack_rows`
+
 ## fangate から持ち込まなかったもの
 `core/fan_gate.py`（旧ゲート／ウイング／タブ／井戸／スプルーブッシュ込みの builder）と `test_geometry_fan_gate`。
 UI のゲート形状 radio（fangate の旧／ウイング。本リポの Gate 1／Gate 2 の選択は v0.7.0 で別に作った）・タブ・井戸／スプルーの expander。

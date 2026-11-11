@@ -552,6 +552,71 @@ def render_pressure_map(
     return output_path
 
 
+#: Cells frozen through when the fill ends: no holding pressure, no colour scale.
+PACKING_FROZEN_RGB = (0.62, 0.62, 0.62)
+
+
+def render_packing_reach_map(
+    result: FlowResult,
+    reach,
+    output_path: str | Path,
+    cmap: str = "viridis",
+) -> Path:
+    """Map of how long holding pressure reaches each cell after the fill.
+
+    ``reach`` is a :class:`core.packing.PackingReach`. The colour scale runs
+    from 0 to the longest solidification time in the cavity, so a cell fed
+    until it freezes shows its own solidification time and a cell behind an
+    early-freezing neck shows the neck's. Cells already frozen through at the
+    end of the fill are grey.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    extent = _base_extent(result)
+    g = result.geometry
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=110)
+    _draw_geometry(ax, result)
+
+    solid = np.nan_to_num(np.asarray(reach.solidify_s, dtype=float), nan=0.0)
+    fed = np.nan_to_num(np.asarray(reach.reach_s, dtype=float), nan=0.0)
+    vmax = float(solid[g.mask].max()) if g.mask.any() else 0.0
+    if vmax <= 0.0:
+        vmax = 1.0
+    rgba = plt.get_cmap(cmap)(np.clip(fed / vmax, 0.0, 1.0))
+    rgba[..., 3] = np.where(g.mask, 1.0, 0.0)
+    rgba[g.mask & (solid <= 0.0)] = (*PACKING_FROZEN_RGB, 1.0)
+    ax.imshow(rgba, origin="lower", extent=extent, interpolation="nearest")
+
+    _draw_gate_markers(ax, result, color="lime", edgecolor="black")
+
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("y [mm]")
+    ax.set_title("Holding-pressure reach after the fill")
+    ax.legend(
+        handles=[Patch(color=PACKING_FROZEN_RGB, label="frozen at the end of the fill")],
+        loc="upper right",
+        fontsize=8,
+        framealpha=0.9,
+    )
+
+    cbar = fig.colorbar(
+        plt.cm.ScalarMappable(norm=mcolors.Normalize(0, vmax), cmap=cmap),
+        ax=ax,
+        fraction=0.04,
+        pad=0.02,
+    )
+    cbar.set_label("time a molten path from the gate remains [s]")
+
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    return output_path
+
+
 WELD_ALPHA_FLOOR = 0.35  # meld: faint but always visible once flagged
 WELD_ALPHA_FULL = 0.9  # weld: saturated
 

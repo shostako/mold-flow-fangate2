@@ -35,14 +35,17 @@ from core import (
     fill_frame_fractions,
     fill_frame_times,
     fill_player_height_px,
+    packing_reach,
     render_3d_fill_time,
     render_3d_pressure,
     render_3d_thickness_map,
     render_core_layer_map,
     render_fill_animation,
+    render_packing_reach_map,
     render_pressure_map,
     render_skin_layer_map,
     render_weldlines,
+    summarize_by_thickness,
     wrap_standalone_html,
 )
 from core.geometry import Geometry
@@ -311,6 +314,29 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- $f_{\\text{cmp}}$: 充填占有率（圧縮開始時にキャビティ何%まで充填されているか）"
     )
 
+    st.markdown("### 8. 保圧が届く時間（見積り、通常成形のとき）")
+    st.markdown(
+        "保圧の流れは解かない。充填の結果から、**ゲートからその場所まで溶けた通り道がいつまで残るか**だけを読む。"
+        "温度の扱いは 5-2 と同じで、充填の終わりにそのセルにいる樹脂は、到達時刻 $t_{\\text{arr}}$ だけ"
+        "金型温度の壁にはさまれて冷えている。充填のあとは流れを止め、同じ板の熱伝導で冷やす。"
+    )
+    st.latex(
+        r"t_f(h) = \mathrm{Fo}^* \, \frac{h^2}{\alpha}, \qquad "
+        r"s = \max\bigl(t_f(h) - t_{\text{arr}},\, 0\bigr), \qquad "
+        r"R(x) = \max_{\text{path}:\,\text{gate} \to x} \; \min_{c \,\in\, \text{path}} s(c)"
+    )
+    st.markdown(
+        "- $t_f(h)$: 厚さ $h$ の板の中心が固化温度 $T_{\\text{mold}} + f\\,(T_{\\text{melt}} - T_{\\text{mold}})$ まで下がる樹脂の年齢。"
+        "$\\mathrm{Fo}^*$ は両面冷却の板の厳密解（級数）から求める（$f = 0.3$ で 0.1465）。**厚さの 2 乗に比例する**\n"
+        "- $s$: 充填の終わりから数えて、そのセルの中心が固まるまでの時間（0 ＝ 充填の終わりに固まっている）\n"
+        "- $R$: 保圧が届く時間。通り道は、その上でいちばん早く固まるセルと同じだけもつ。"
+        "いちばん長くもつ通り道を取る（ゲートは固まらないとする）\n"
+        "- 割合 $R / s$: そのセルが固まるまでの時間のうち、保圧が届いている割合\n\n"
+        "見ていないもの: 保圧中に流れ込む樹脂の熱（入れると $R$ は延びる）、充填中にゲートの近くの壁にできる固化層"
+        "（入れると縮む）、固化層で通り道が狭くなること、樹脂の縮み（pvT）。2 つの効果は逆向きなので秒は目安で、"
+        "形どうしの順位と比に使う。射出圧縮成形 ON のときは出さない。"
+    )
+
     st.markdown("---")
     st.markdown("### ✅ モデル化している現象")
     st.markdown(
@@ -324,7 +350,8 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- **剪断発熱（段階1, 層別モード内）**: 粘性散逸による局所温度上昇、Brinkman 数診断\n"
         "- **ショートショット予測**: スキン層モデルでは露光時計の封止（$t_{\\text{close}} = t_{\\text{arr}} + t_c$）で切られたセル、"
         "層別モデルでは中央層温度ベース判定\n"
-        "- 射出圧縮成形による等価流路拡大（stroke モード、CLI に factor 後方互換あり、オプション）"
+        "- 射出圧縮成形による等価流路拡大（stroke モード、CLI に factor 後方互換あり、オプション）\n"
+        "- **保圧が届く時間の見積り**（通常成形のとき）: 充填のあと流れを止めて冷やし、ゲートからの溶けた通り道が残る時間を読む"
     )
 
     st.markdown("### ❌ モデル化していない現象（重要）")
@@ -334,7 +361,8 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- **剪断発熱の自己整合（段階2）**: 段階1 は閉形式の局所近似のみ。"
         r"$\rho c_p \partial_t T = k \partial_z^2 T + \eta \dot\gamma^2$ を厚み方向 1D FDM で陰解法積分する"
         "段階2 は別ロードマップ。$Br \\ge 2$ 領域では段階1 がズレる\n"
-        "- **保圧（パッキング段階）**: 充填までしかモデル化しない\n"
+        "- **保圧（パッキング段階）の流れと圧力**: 保圧中の樹脂の動き・圧力の履歴・縮みは解かない"
+        "（§8 の「保圧が届く時間」は充填の結果からの見積り）\n"
         "- **収縮・反り・残留応力**: 熱固化収縮も結晶化も入っていない\n"
         "- **層内対流項**: 1D Neumann は純粋拡散のみ（薄板では妥当な近似だが、極厚 $h > 4$ mm では破綻）\n"
         "- **ベント・脱気挙動**: エアトラップ位置は予測するが圧抜けは考慮しない\n"
@@ -1679,6 +1707,24 @@ if do_run:
         _weld_path = render_weldlines(
             result, _tmp_dir / "weld.png", weld_min_angle_deg=float(weld_min_angle)
         )
+        # 保圧が届く時間（見積り）。キャビティの厚さが動かない通常成形でだけ出す:
+        # 射出圧縮は圧縮そのものが保圧の役をし、厚さも充填中に変わる。
+        _pack_path: Path | None = None
+        _pack_rows: list[dict] | None = None
+        if not icm:
+            _pack = packing_reach(
+                geom.mask,
+                geom.thickness_mm,
+                result.fill_time_s,
+                geom.gates,
+                float(mat.thermal_diffusivity_m2_s),
+                float(solid_fraction),
+            )
+            _pack_path = render_packing_reach_map(result, _pack, _tmp_dir / "packing_reach.png")
+            _pack_region = geom.mask if geom.product_mask is None else geom.mask & geom.product_mask
+            _pack_rows = summarize_by_thickness(
+                _pack, geom.thickness_mm, _pack_region, geom.cell_size_mm
+            )
         _skin_path: Path | None = None
         _core_path: Path | None = None
         _layer_T_grid_path: Path | None = None
@@ -1733,6 +1779,7 @@ if do_run:
                 _gif_path,
                 _press_path,
                 _weld_path,
+                _pack_path,
                 _skin_path,
                 _core_path,
                 _layer_T_grid_path,
@@ -1764,6 +1811,15 @@ if do_run:
                 "metadata.json",
                 json.dumps(result.metadata, indent=2, ensure_ascii=False, default=str),
             )
+            if _pack_rows is not None:
+                _zf_run.writestr(
+                    "packing_reach.json",
+                    json.dumps(
+                        {"solid_fraction": float(solid_fraction), "by_thickness": _pack_rows},
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                )
             if two_phase_result is not None:
                 if _two_phase_player_html is not None:
                     _zf_run.writestr(
@@ -1804,6 +1860,9 @@ if do_run:
         st.session_state["mfs_press_path"] = _press_path
         st.session_state["mfs_weld_path"] = _weld_path
         st.session_state["mfs_weld_min_angle"] = float(weld_min_angle)
+        st.session_state["mfs_pack_path"] = _pack_path
+        st.session_state["mfs_pack_rows"] = _pack_rows
+        st.session_state["mfs_pack_solid_fraction"] = float(solid_fraction)
         st.session_state["mfs_skin_path"] = _skin_path
         st.session_state["mfs_core_path"] = _core_path
         st.session_state["mfs_layer_T_grid_path"] = _layer_T_grid_path
@@ -1971,6 +2030,49 @@ if "mfs_result" in st.session_state:
                 "黄×=最終充填位置（エアトラップ候補）。下限角はサイドバー「出力」で変えられる"
             )
             _download("⬇ PNGをダウンロード", weld_path, "image/png", "dl_weld_png")
+
+        with st.expander("保圧が届く時間（見積り）"):
+            _pack_path_shown = st.session_state.get("mfs_pack_path")
+            _pack_rows_shown = st.session_state.get("mfs_pack_rows")
+            if _pack_path_shown is None or _pack_rows_shown is None:
+                st.info(
+                    "射出圧縮成形 ON の解析では出しません（圧縮が保圧の役をし、"
+                    "キャビティの厚さも充填中に変わるため）。"
+                    "通常成形（圧縮成形 OFF）で解析すると出ます。"
+                )
+            else:
+                st.image(str(_pack_path_shown))
+                _sf = float(st.session_state.get("mfs_pack_solid_fraction", 0.3))
+                st.caption(
+                    "色＝充填の終わりから数えて、ゲートからその場所まで溶けた通り道が"
+                    "残っている時間。灰色＝充填の終わりに厚さの中心まで固まっている所。"
+                    f"固化の判定は T_mold + {_sf:g}·(T_melt − T_mold)。"
+                )
+                st.dataframe(
+                    [
+                        {
+                            "肉厚 [mm]": r["thickness_mm"],
+                            "面積 [cm²]": round(r["area_cm2"], 1),
+                            "充填の終わりに固化 [%]": round(100 * r["frozen_at_fill_end"], 1),
+                            "固まるまで [s]": None
+                            if r["solidify_s"] is None
+                            else round(r["solidify_s"], 2),
+                            "保圧が届く [s]": None
+                            if r["reach_s"] is None
+                            else round(r["reach_s"], 2),
+                            "割合 [%]": None if r["ratio"] is None else round(100 * r["ratio"], 1),
+                        }
+                        for r in _pack_rows_shown
+                    ],
+                    hide_index=True,
+                )
+                st.caption(
+                    "製品の中を肉厚ごとに集計。「固まるまで」「保圧が届く」「割合」は、"
+                    "充填の終わりにまだ溶けているセルの平均。割合＝保圧が届く ÷ 固まるまで。"
+                    "流れを止めて冷やした見積りで、保圧中に流れ込む樹脂の熱と樹脂の縮みは"
+                    "見ていない。秒は目安で、形どうしの比較に使う。"
+                )
+                _download("⬇ PNGをダウンロード", _pack_path_shown, "image/png", "dl_pack_png")
 
         if two_phase_skip is not None:
             # 実行時の警告は rerun で流れるので、結果ペイン側にも理由を残す
