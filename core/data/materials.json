@@ -5,6 +5,7 @@
     "equation": "eta(gamma_dot, T) = eta0(T) / (1 + (eta0*gamma_dot / tau_star)^(1-n)); eta0(T) = D1 * exp(-A1*(T-T*)/(A2 + (T-T*))); T* = D2 + D3*P",
     "skin_layer": "Skin layer growth approximated by Neumann/Stefan form s(t) = c_skin * sqrt(alpha * t); thermal_diffusivity_m2_s = alpha [m^2/s]. Default c_skin is set in the solver and may be overridden per-material in future revisions.",
     "shear_heating": "Viscous dissipation (剪断発熱) uses specific_heat_J_kgK and density_melt_kgm3 to convert volumetric power η·γ̇² [W/m³] into a temperature rise rate. Thermal conductivity is derived as k = α·ρ·cp [W/(m·K)] for the Brinkman number.",
+    "pvt": "pvt_tait holds the two-domain Tait constants in SI units (v [m^3/kg], T [K], p [Pa]; C = 0.0894). PMMA: Liu et al., J. Manuf. Sci. Eng. 141(8) 081011 (2019), Table 1 (Plexiglas RV825), converted from cc/g and dyne/cm^2. That table prints the subscript l on both b3 rows and both b4 rows; the melt/solid assignment here follows the row order (melt first, as for b1 and b2). Materials without pvt_tait have no holding-phase solve.",
     "units": {
       "T": "K",
       "P": "Pa",
@@ -137,7 +138,19 @@
       "T_mold_recommended": [333.15, 363.15],
       "density_melt_kgm3": 1080,
       "thermal_diffusivity_m2_s": 1.1e-7,
-      "specific_heat_J_kgK": 2100
+      "specific_heat_J_kgK": 2100,
+      "pvt_tait": {
+        "b1m": 8.5982e-4,
+        "b2m": 5.697e-7,
+        "b3m": 2.09e8,
+        "b4m": 4.9083e-3,
+        "b1s": 8.60702e-4,
+        "b2s": 1.995e-7,
+        "b3s": 2.73e8,
+        "b4s": 3.394e-3,
+        "b5": 383.0,
+        "b6": 2.0e-7
+      }
     }
   }
 }

@@ -50,6 +50,11 @@ from core import (
 )
 from core.geometry import Geometry
 from core.injection_profile import InjectionProfile, InjectionStage
+from core.packing_solve import (
+    coarsening_factor,
+    solve_packing_coarsened,
+    summarize_solve_by_thickness,
+)
 from core.settings_record import config_settings, settings_json
 from core.solver import WELD_MIN_ANGLE_DEG
 from core.two_phase import solve_two_phase_short_shot
@@ -59,6 +64,9 @@ from core.visualizer import (
     THICKNESS_CMAP,
     export_two_phase_frames,
     render_layer_grid,
+    render_packing_late_fill_map,
+    render_packing_pressure_history,
+    render_packing_shrinkage_map,
     render_short_shot_map,
     render_two_phase_animation,
     render_two_phase_map,
@@ -337,6 +345,47 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "形どうしの順位と比に使う。射出圧縮成形 ON のときは出さない。"
     )
 
+    st.markdown("### 9. 保圧の計算（通常成形で「保圧を解く」が ON のとき）")
+    st.markdown(
+        "体積の VP 切替の充填率まで射出率で埋めた時点から、ゲートを保圧 $P_h$ で保持時間 $t_h$ だけ保持し、"
+        "そのあとゲートを閉じる。樹脂は縮む（密度は圧力と温度で決まる）ので、保圧のあいだ樹脂が流れ込み続ける。"
+        "セル（面積 $A$、厚さ $h$）の質量の保存を、時間を追って解く。"
+    )
+    st.latex(
+        r"\frac{\partial}{\partial t}\bigl(\bar\rho(p)\, h\bigr) = "
+        r"\nabla \cdot \bigl(\rho\, S\, \nabla p\bigr), \qquad "
+        r"S = \int_{-h/2}^{h/2} \frac{z^2}{\eta(T(z),\, \tau)}\, dz, \qquad \tau = |\nabla p|\,|z|"
+    )
+    st.latex(
+        r"v(T, p) = v_0(T)\left[1 - C \ln\!\left(1 + \frac{p}{B(T)}\right)\right], \qquad "
+        r"S_v = 1 - \frac{M\, v(T_{\text{room}},\, 0)}{A\, h}"
+    )
+    st.markdown(
+        "- $\\bar\\rho(p)$: 厚さで平均した密度。厚さ方向の温度は §8 と同じ板の冷え方（樹脂の年齢 $t_{\\text{arr}} + t$）で、"
+        "各深さの密度を 2 領域 Tait の pvT（$v$ は比容積、$C = 0.0894$）から出す\n"
+        "- $S$: 流れやすさ。各深さの Cross-WLF 粘度を、その場の剪断応力 $\\tau$ で下げて積分する。"
+        "固化温度より冷えた層は流れない。**通り道が冷えて細るほど、保圧は届かなくなる**\n"
+        "- 圧力は 0 より下がらない。質量が足りなくなったセルは壁から離れた（引けた）とみなし、圧力 0 のまま不足分を持つ\n"
+        "- **VP 切替**: 充填の到達時刻の順に体積を積み、切替の充填率に達した時刻を切替とする。そこまでに樹脂が届いた"
+        "セルは満杯、残りは空として始め、空のセルは満杯の隣から樹脂を受け取って埋まる。100 % にすると、全部埋まった"
+        "ものとして保圧だけを解く\n"
+        "- **機械が送る量の上限**: 保圧に切り替えても、機械は射出率より速くは送れない。上限を超える間は"
+        "ゲートの圧力を保圧より低く保つ\n"
+        "- $S_v$: 室温・大気圧まで冷えたあとの体積の縮み。$M$ は流れが止まったときのセルの質量。"
+        "負は詰め込みすぎ（成形品がキャビティより大きくなる側）\n\n"
+        "入っていないもの: ノズルとホットランナーの圧力損失（保圧はゲートの位置の圧力として扱う）、"
+        "保圧中に流れ込む樹脂が運ぶ熱、型のたわみ、粘度の圧力依存、切替の時点の圧力分布（満杯のセルは一様な 1 MPa から始める）。"
+        "pvT データのある材料（PMMA）でだけ解く。既定は充填と同じ格子で解き、「保圧を粗い格子で解く（検算用）」で"
+        "2 万マス以下にまとめて解ける。"
+    )
+    st.warning(
+        "**薄い所が保圧で埋まるかの判定は当てにならない。** 厚さ方向の温度を解かず、"
+        "「樹脂がそこにあった時間」と「その場所の肉厚」だけで決めている。切替の時点で空のセルにあとから入る樹脂も、"
+        "充填の開始からその場所の肉厚で冷えてきたものとして扱うので、1 mm の額縁のような薄い所は、厚い所を通ってきた"
+        "熱い樹脂が入る場合でも、最初から固まっている扱いになり、埋まらないと出る。厚い所の縮みと圧力は、"
+        "形どうしの比較に使える。市販の解析（充填と保圧を通してエネルギーの式を解く）との大きな違いはここにある。"
+    )
+
     st.markdown("---")
     st.markdown("### ✅ モデル化している現象")
     st.markdown(
@@ -351,7 +400,9 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- **ショートショット予測**: スキン層モデルでは露光時計の封止（$t_{\\text{close}} = t_{\\text{arr}} + t_c$）で切られたセル、"
         "層別モデルでは中央層温度ベース判定\n"
         "- 射出圧縮成形による等価流路拡大（stroke モード、CLI に factor 後方互換あり、オプション）\n"
-        "- **保圧が届く時間の見積り**（通常成形のとき）: 充填のあと流れを止めて冷やし、ゲートからの溶けた通り道が残る時間を読む"
+        "- **保圧が届く時間の見積り**（通常成形のとき）: 充填のあと流れを止めて冷やし、ゲートからの溶けた通り道が残る時間を読む\n"
+        "- **保圧の計算**（通常成形で「保圧を解く」ON、pvT のある材料）: 圧力の時間変化、保圧で入る樹脂の量、"
+        "体積の縮み、型を開く力（§9）"
     )
 
     st.markdown("### ❌ モデル化していない現象（重要）")
@@ -361,16 +412,16 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- **剪断発熱の自己整合（段階2）**: 段階1 は閉形式の局所近似のみ。"
         r"$\rho c_p \partial_t T = k \partial_z^2 T + \eta \dot\gamma^2$ を厚み方向 1D FDM で陰解法積分する"
         "段階2 は別ロードマップ。$Br \\ge 2$ 領域では段階1 がズレる\n"
-        "- **保圧（パッキング段階）の流れと圧力**: 保圧中の樹脂の動き・圧力の履歴・縮みは解かない"
-        "（§8 の「保圧が届く時間」は充填の結果からの見積り）\n"
-        "- **収縮・反り・残留応力**: 熱固化収縮も結晶化も入っていない\n"
+        "- **保圧中の熱と型のたわみ**: §9 の保圧の計算は、流れ込む樹脂が運ぶ熱、型のたわみ、"
+        "ノズルとホットランナーの圧力損失を入れていない\n"
+        "- **反り・残留応力**: 体積の縮み（§9）までで、縮みの向き・反り・残留応力は出ない。結晶化も入っていない\n"
         "- **層内対流項**: 1D Neumann は純粋拡散のみ（薄板では妥当な近似だが、極厚 $h > 4$ mm では破綻）\n"
         "- **ベント・脱気挙動**: エアトラップ位置は予測するが圧抜けは考慮しない\n"
         "- **ホットランナー／ゲートの圧損**: ゲート φ3 の円を射出点として扱い、ノズル・ゲートの縦方向抵抗は入っていない\n"
         "- **STL/STEP 直接読み込み**: パラメトリック形状（額縁プレート＋ランナ 2 種）のみ\n"
         "- **非構造格子・中立面メッシュ**: 構造格子（正方形セル）固定\n"
-        "- **絶対圧力場の出力**: 圧力は正規化値（ゲート=1 / フロント=0）のみ。"
-        "実機の必要型締力評価には未対応"
+        "- **充填中の絶対圧力場**: 充填の圧力マップは正規化値（ゲート=1 / フロント=0）のみ。"
+        "充填中の必要型締力は出ない（保圧中の型を開く力は §9 で出る）"
     )
 
     st.markdown("### 用途と適用範囲")
@@ -392,7 +443,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
 # Bump this string when you add/remove fields on `core.materials.Material`.
 # The parameter must NOT start with an underscore: Streamlit leaves
 # underscore-prefixed arguments out of the cache hash (Codex P2, PR #5).
-_MATERIAL_DB_SCHEMA_VERSION = "v2_shear_heating"
+_MATERIAL_DB_SCHEMA_VERSION = "v3_pvt"
 
 
 @st.cache_resource
@@ -413,6 +464,26 @@ PACK_SKIP_FRACTION = (
     "固化判定 fraction が 0 のときは出しません（厚さの中心が金型温度まで下がる時刻は"
     "決まらないため）。0 より大きい値で解析すると出ます。"
 )
+
+
+# 保圧の計算を解かないときに結果ペインへ出す理由
+HOLD_SKIP_OFF = "サイドバー「保圧（通常成形）」で「保圧を解く」を ON にして解析すると出ます。"
+HOLD_SKIP_ICM = (
+    "射出圧縮成形 ON の解析では解きません（圧縮が保圧の役をし、"
+    "キャビティの厚さも充填中に変わるため）。"
+)
+HOLD_SKIP_PVT = "この材料には pvT データが無いので解けません（pvT があるのは PMMA）。"
+HOLD_SKIP_SHORT = "充填が全体に届いていない（ショートショット）ので解きません。"
+# VP 切替のあと保圧で埋める計算の、いちばん大きい弱点。結果ペインに必ず出す
+HOLD_THIN_CAVEAT = (
+    "薄い所（1 mm の額縁など）が保圧で埋まるかの判定は当てにならない。切替のあとに入る樹脂の"
+    "温度を、充填の開始からその場所の肉厚で冷えてきたものとして決めているので、厚い所を"
+    "通ってきた熱い樹脂でも、薄い所では最初から固まっている扱いになる。"
+    "そのため、薄い所は実際より埋まりにくく出る。厚い所の縮みと圧力の比較には使える。"
+)
+# 保圧の計算に使うセル数の上限。これを超える格子は、保圧だけ粗い格子に写して解く
+# （直接法の連立方程式を 1 刻みに何度も解くので、セル数で時間が決まる）。
+HOLD_MAX_CELLS = 20_000
 
 
 # ----------------------- fan-runner plate: parametric inputs -----------------------
@@ -1234,6 +1305,62 @@ with st.sidebar:
             comp_stroke = None
             comp_frac = 0.0
 
+    with st.expander("保圧（通常成形）", expanded=False):
+        hold_on = st.checkbox(
+            "保圧を解く",
+            value=False,
+            key="hold_on",
+            help=(
+                "充填のあと、ゲートを保圧で保持して、圧力の時間変化と体積の縮みを解く"
+                "（圧縮性つき Hele-Shaw、2 領域 Tait の pvT）。圧縮成形 OFF のときだけ解く。"
+                "充填と同じ格子で解くので、解析時間が大きく延びる（数分〜数十分。形と VP 切替の値で変わる）。"
+            ),
+        )
+        hold_p_mpa = st.number_input(
+            "保圧 [MPa]",
+            min_value=0.0,
+            max_value=250.0,
+            value=60.0,
+            step=5.0,
+            key="hold_p_mpa",
+            disabled=not hold_on,
+            help="ゲートにかかる圧力。ノズルとホットランナーの圧力損失は入らない。",
+        )
+        hold_t_s = st.number_input(
+            "保圧時間 [s]",
+            min_value=0.0,
+            max_value=120.0,
+            value=10.0,
+            step=0.5,
+            key="hold_t_s",
+            disabled=not hold_on,
+            help="この時間のあとゲートを閉じる（バルブゲート。逆流はしない）。",
+        )
+        hold_vp_pct = st.number_input(
+            "VP 切替の充填率 [%]",
+            min_value=50.0,
+            max_value=100.0,
+            value=99.0,
+            step=1.0,
+            key="hold_vp_pct",
+            disabled=not hold_on,
+            help=(
+                "体積のこの割合まで射出率で埋め、そこから保圧に切り替える。残りは保圧で埋める"
+                "（機械が送る量は射出率が上限）。100 にすると、全部埋まったものとして保圧だけを見る。"
+                "薄い所が保圧で埋まるかの判定は、温度の扱いが粗いので当てにならない（式解説 §9）。"
+            ),
+        )
+        hold_coarse = st.checkbox(
+            "保圧を粗い格子で解く（検算用）",
+            value=False,
+            key="hold_coarse",
+            disabled=not hold_on,
+            help=(
+                "OFF（既定）は充填と同じ格子で解く。1 mm 格子では数十分かかることがある。"
+                "ON はマスを 2 万以下にまとめて解く（検算用。それでも数分〜数十分）。"
+            ),
+        )
+
     # ショートショット欄はこの位置に出すが、中身は版表示の後で埋める:
     # build_geometry() は不整合で st.stop() するので、サイドバー内で先に呼ぶと
     # 「出力」欄と版表示がエラーのたびに消える（版表示をサイドバーに置いた理由
@@ -1515,6 +1642,7 @@ analysis_inputs = {
     ),
     "compression_molding": (icm, comp_stroke, comp_frac),
     "two_phase_short_shot": (two_phase_on, shot_volume_cm3),
+    "holding": (hold_on, hold_p_mpa, hold_t_s, hold_vp_pct, hold_coarse) if hold_on else (False,),
     "output": (num_frames, fill_cmap, iso_levels),
 }
 STALE_RESULT_MSG = (
@@ -1678,6 +1806,17 @@ if do_run:
                 if two_phase_result is not None
                 else {"enabled": False}
             ),
+            "holding": (
+                {
+                    "enabled": True,
+                    "pressure_MPa": float(hold_p_mpa),
+                    "time_s": float(hold_t_s),
+                    "vp_switch_fill_percent": float(hold_vp_pct),
+                    "coarse_grid": bool(hold_coarse),
+                }
+                if hold_on
+                else {"enabled": False}
+            ),
             "output": {
                 "num_frames": num_frames,
                 "fill_cmap": fill_cmap,
@@ -1745,6 +1884,90 @@ if do_run:
             _pack_rows = summarize_by_thickness(
                 _pack, geom.thickness_mm, _pack_region, geom.cell_size_mm
             )
+        # 保圧の計算（圧力の時間変化と体積の縮み）。頼まれたときだけ解く。
+        _hold_path: Path | None = None
+        _hold_hist_path: Path | None = None
+        _hold_late_path: Path | None = None
+        _hold_rows: list[dict] | None = None
+        _hold_info: dict | None = None
+        _hold_skip: str | None = None
+        if not hold_on:
+            _hold_skip = HOLD_SKIP_OFF
+        elif icm:
+            _hold_skip = HOLD_SKIP_ICM
+        elif mat.pvt is None:
+            _hold_skip = HOLD_SKIP_PVT
+        elif not 0.0 < float(solid_fraction) < 1.0:
+            _hold_skip = PACK_SKIP_FRACTION
+        elif not np.all(np.isfinite(np.asarray(result.fill_time_s, dtype=float)[geom.mask])):
+            _hold_skip = HOLD_SKIP_SHORT
+        else:
+            _hold_factor = (
+                coarsening_factor(int(geom.mask.sum()), HOLD_MAX_CELLS) if hold_coarse else 1
+            )
+            # 機械が送れる量の上限。射出率が決まっていればその値、プロファイルのときは
+            # 充填全体の平均（キャビティの体積 ÷ 充填時間）
+            _hold_rate = (
+                float(inj_Q) * 1e-6
+                if inj_Q
+                else float(geom.thickness_mm[geom.mask].sum())
+                * geom.cell_size_mm**2
+                * 1e-9
+                / max(float(result.total_fill_time_s), 1e-9)
+            )
+            _hold = None
+            try:
+                with st.spinner("保圧を解いている…"):
+                    _hold = solve_packing_coarsened(
+                        geom.mask,
+                        geom.thickness_mm,
+                        result.fill_time_s,
+                        geom.gates,
+                        geom.cell_size_mm,
+                        mat,
+                        melt_C + 273.15,
+                        mold_C + 273.15,
+                        float(hold_p_mpa) * 1e6,
+                        float(hold_t_s),
+                        solid_fraction=float(solid_fraction),
+                        factor=_hold_factor,
+                        switch_fill_fraction=float(hold_vp_pct) / 100.0,
+                        max_inflow_m3_s=_hold_rate,
+                    )
+            except (ValueError, RuntimeError) as e:
+                # 充填の結果は済んでいる。保圧だけ理由を残して飛ばす
+                _hold_skip = f"保圧の計算を完了できませんでした: {e}"
+                st.warning(_hold_skip)
+            if _hold is not None:
+                _hold_region = (
+                    geom.mask if geom.product_mask is None else geom.mask & geom.product_mask
+                )
+                _hold_path = render_packing_shrinkage_map(
+                    result, _hold, _tmp_dir / "packing_solve.png"
+                )
+                _hold_late_path = render_packing_late_fill_map(
+                    result, _hold, _tmp_dir / "packing_late_fill.png"
+                )
+                _hold_hist_path = render_packing_pressure_history(
+                    _hold, geom.thickness_mm, _hold_region, _tmp_dir / "packing_pressure.png"
+                )
+                _hold_rows = summarize_solve_by_thickness(
+                    _hold, geom.thickness_mm, _hold_region, geom.cell_size_mm
+                )
+                _hold_info = {
+                    "pressure_MPa": float(hold_p_mpa),
+                    "time_s": float(hold_t_s),
+                    "vp_switch_fill_percent": float(hold_vp_pct),
+                    "vp_switch_time_s": float(_hold.switch_time_s),
+                    "unfilled_volume_percent": 100.0 * _hold.unfilled_volume_fraction,
+                    "max_inflow_cm3_s": _hold_rate * 1e6,
+                    "solid_fraction": float(solid_fraction),
+                    "grid_mm": float(_hold.cell_size_mm),
+                    "added_mass_percent": 100.0 * _hold.added_mass_fraction,
+                    "clamp_force_peak_kN": float(_hold.clamp_force_N.max()) / 1e3,
+                    "end_time_s": float(_hold.times_s[-1]),
+                    "unconverged_steps": int(_hold.unconverged_steps),
+                }
         _skin_path: Path | None = None
         _core_path: Path | None = None
         _layer_T_grid_path: Path | None = None
@@ -1800,6 +2023,9 @@ if do_run:
                 _press_path,
                 _weld_path,
                 _pack_path,
+                _hold_path,
+                _hold_hist_path,
+                _hold_late_path,
                 _skin_path,
                 _core_path,
                 _layer_T_grid_path,
@@ -1836,6 +2062,15 @@ if do_run:
                     "packing_reach.json",
                     json.dumps(
                         {"solid_fraction": float(solid_fraction), "by_thickness": _pack_rows},
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                )
+            if _hold_rows is not None:
+                _zf_run.writestr(
+                    "packing_solve.json",
+                    json.dumps(
+                        {**(_hold_info or {}), "by_thickness": _hold_rows},
                         indent=2,
                         ensure_ascii=False,
                     ),
@@ -1884,6 +2119,12 @@ if do_run:
         st.session_state["mfs_pack_rows"] = _pack_rows
         st.session_state["mfs_pack_solid_fraction"] = float(solid_fraction)
         st.session_state["mfs_pack_skip"] = _pack_skip
+        st.session_state["mfs_hold_path"] = _hold_path
+        st.session_state["mfs_hold_hist_path"] = _hold_hist_path
+        st.session_state["mfs_hold_late_path"] = _hold_late_path
+        st.session_state["mfs_hold_rows"] = _hold_rows
+        st.session_state["mfs_hold_info"] = _hold_info
+        st.session_state["mfs_hold_skip"] = _hold_skip
         st.session_state["mfs_skin_path"] = _skin_path
         st.session_state["mfs_core_path"] = _core_path
         st.session_state["mfs_layer_T_grid_path"] = _layer_T_grid_path
@@ -2090,6 +2331,80 @@ if "mfs_result" in st.session_state:
                     "見ていない。秒は目安で、形どうしの比較に使う。"
                 )
                 _download("⬇ PNGをダウンロード", _pack_path_shown, "image/png", "dl_pack_png")
+
+        with st.expander("保圧の計算（体積の縮みと圧力）"):
+            _hold_path_shown = st.session_state.get("mfs_hold_path")
+            _hold_hist_shown = st.session_state.get("mfs_hold_hist_path")
+            _hold_rows_shown = st.session_state.get("mfs_hold_rows")
+            _hold_info_shown = st.session_state.get("mfs_hold_info")
+            if (
+                _hold_path_shown is None
+                or _hold_hist_shown is None
+                or _hold_rows_shown is None
+                or _hold_info_shown is None
+            ):
+                st.info(st.session_state.get("mfs_hold_skip") or HOLD_SKIP_OFF)
+            else:
+                _hi = _hold_info_shown
+                _hc0, _hc1, _hc2, _hc3 = st.columns(4)
+                _hc0.metric(
+                    "埋まらなかった体積",
+                    f"{_hi['unfilled_volume_percent']:.1f} %",
+                    help="保圧をかけても最後まで満杯にならなかったマスの体積の割合。",
+                )
+                _hc1.metric("保圧で入った樹脂", f"{_hi['added_mass_percent']:.1f} %")
+                _hc2.metric(
+                    "型を開く力の最大",
+                    f"{_hi['clamp_force_peak_kN'] / 9.80665:.0f} tf",
+                    help="キャビティの圧力 × 投影面積の最大（製品＋ランナ）。",
+                )
+                _hc3.metric("解いた格子", f"{_hi['grid_mm']:g} mm")
+                _hold_late_shown = st.session_state.get("mfs_hold_late_path")
+                if _hi["vp_switch_fill_percent"] < 100.0 and _hold_late_shown is not None:
+                    st.image(str(_hold_late_shown))
+                    st.caption(
+                        f"体積の {_hi['vp_switch_fill_percent']:g} % を射出率で埋めた時点"
+                        f"（充填開始から {_hi['vp_switch_time_s']:.2f} 秒）で保圧に切り替えた。"
+                        "灰色＝切替の時点で埋まっていた所、色＝保圧で埋まった時刻（切替から）、"
+                        "赤＝最後まで埋まらなかった所。機械が送る量は "
+                        f"{_hi['max_inflow_cm3_s']:.1f} cm³/s を上限にしている。"
+                    )
+                    st.warning(HOLD_THIN_CAVEAT)
+                else:
+                    st.caption("VP 切替 100 %：全部埋まったものとして、保圧だけを解いた。")
+                st.image(str(_hold_path_shown))
+                st.caption(
+                    f"保圧 {_hi['pressure_MPa']:g} MPa を {_hi['time_s']:g} 秒かけてゲートを閉じ、"
+                    "室温・大気圧まで冷えたあとの体積の縮み。赤＝縮む、青＝詰め込みすぎ（縮みが負）。"
+                )
+                st.dataframe(
+                    [
+                        {
+                            "肉厚 [mm]": r["thickness_mm"],
+                            "面積 [cm²]": round(r["area_cm2"], 1),
+                            "縮み 平均 [%]": round(100 * r["shrinkage_mean"], 2),
+                            "縮み 最小 [%]": round(100 * r["shrinkage_min"], 2),
+                            "縮み 最大 [%]": round(100 * r["shrinkage_max"], 2),
+                            "圧力の最大 [MPa]": round(r["peak_pressure_Pa"] / 1e6, 1),
+                            "固まるときの圧力 [MPa]": round(r["freeze_pressure_Pa"] / 1e6, 1),
+                        }
+                        for r in _hold_rows_shown
+                    ],
+                    hide_index=True,
+                )
+                st.image(str(_hold_hist_shown))
+                st.caption(
+                    "製品の中を肉厚ごとに集計（埋まらなかった所は除く）。圧力はゲートにかけた値で、ノズルとホットランナーの"
+                    "損失は入っていない。温度は充填と同じ板の冷え方で、保圧中に流れ込む樹脂の熱と"
+                    "型のたわみは入っていない。「固まるときの圧力」は厚さの中心が固まった時点の圧力。"
+                )
+                if _hi["unconverged_steps"]:
+                    st.warning(
+                        f"{_hi['unconverged_steps']} 刻みで反復が収束しないまま進めています。"
+                        "数字は目安として見てください。"
+                    )
+                _download("⬇ 縮みの地図 PNG", _hold_path_shown, "image/png", "dl_hold_png")
+                _download("⬇ 圧力の時間変化 PNG", _hold_hist_shown, "image/png", "dl_hold_hist_png")
 
         if two_phase_skip is not None:
             # 実行時の警告は rerun で流れるので、結果ペイン側にも理由を残す

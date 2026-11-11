@@ -9,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .pvt import TaitPVT
+
 
 @dataclass(frozen=True)
 class Material:
@@ -36,6 +38,9 @@ class Material:
     # ``thermal_diffusivity_m2_s`` the thermal conductivity is recovered
     # as ``k = α · ρ · cp`` (used for the Brinkman number).
     specific_heat_J_kgK: float = 2400.0
+    # Two-domain Tait pvT (``pvt_tait`` in the JSON). None where the database
+    # has no pvT data: the holding-phase solve needs it and is skipped then.
+    pvt: TaitPVT | None = None
 
     @property
     def thermal_conductivity_W_mK(self) -> float:
@@ -78,6 +83,7 @@ class MaterialDB:
                 density_melt_kgm3=m.get("density_melt_kgm3", 1000.0),
                 thermal_diffusivity_m2_s=m.get("thermal_diffusivity_m2_s", 1.0e-7),
                 specific_heat_J_kgK=m.get("specific_heat_J_kgK", 2400.0),
+                pvt=TaitPVT.from_dict(m["pvt_tait"]) if "pvt_tait" in m else None,
             )
 
     @property
