@@ -369,3 +369,70 @@ def test_a_rate_the_pressure_cannot_hold_down_is_counted():
         end_time_s=0.2,
     )
     assert slow.rate_cap_exceeded_steps > 0
+
+
+def test_cells_at_the_kink_do_not_stall_the_newton_iteration():
+    # The 12.3-inch plate (Gate 1, 4 mm cells) on the arrival times of a fill
+    # that carried the temperature as a state. Around 8 s after the switch the
+    # cells that had just filled crossed u = 0 and were thrown from the floor
+    # to the ceiling and back at every iteration: the step shrank to 0.1 ms and
+    # the march did not get past 8.0 s in 20 minutes.
+    from pathlib import Path
+
+    from core.fan_runner import FanRunnerPlateConfig, build_fan_runner_plate_geometry
+
+    geom = build_fan_runner_plate_geometry(FanRunnerPlateConfig(cell_size_mm=4.0))
+    t_arr = np.load(Path(__file__).parent / "data" / "plate123_gate1_4mm_arrival.npz")["t_arr"]
+    steps = []
+
+    def count(t, end):
+        steps.append(t)
+        if len(steps) > 400:  # the stalled march took thousands of 0.1 ms steps
+            raise RuntimeError(f"the march stalled at t = {t:.4f} s")
+
+    r = solve_packing(
+        geom.mask,
+        geom.thickness_mm,
+        t_arr,
+        geom.gates,
+        4.0,
+        PMMA,
+        T_MELT,
+        T_MOLD,
+        90e6,
+        20.0,
+        solid_fraction=0.3,
+        switch_fill_fraction=0.99,
+        max_inflow_m3_s=39.27e-6,
+        end_time_s=9.0,
+        progress=count,
+    )
+    assert r.times_s[-1] == pytest.approx(9.0)
+    assert r.unconverged_steps == 0
+    assert r.newton_iterations < 2000
+
+
+def test_a_cell_stopped_on_the_kink_is_tried_on_its_other_side():
+    # A sealed cavity that starts a hair above zero pressure and cools: it has
+    # to end in the deficit branch (u < 0), not be accepted on the kink at 0.
+    mask = np.ones((1, 1), dtype=bool)
+    thk = np.full((1, 1), 3.0)
+    t_arr = np.zeros((1, 1))
+    r = solve_packing(
+        mask,
+        thk,
+        t_arr,
+        [(0, 0)],
+        2.0,
+        PMMA,
+        T_MELT,
+        T_MOLD,
+        60e6,
+        0.0,
+        start_pressure_Pa=100.0,
+        end_time_s=2.0,
+    )
+    assert r.unconverged_steps == 0
+    assert r.shrinkage[0, 0] > 0.0
+    # the mass the cell had at the switch is the mass it keeps (nothing flows)
+    assert r.total_mass_kg[-1] == pytest.approx(r.initial_mass_kg, rel=1e-9)

@@ -492,11 +492,19 @@ def solve_packing(
                     options={"SymmetricMode": True},
                 )
             u_next = np.clip(u_it + lu.solve(-res), floor, ceiling)
+            # A cell that crosses the kink at u = 0 (just full: below it the mass
+            # follows u about a thousand times faster than above) stops on it, and
+            # the next iteration takes the slope of the side it goes on to. Without
+            # this, Newton throws such a cell from the floor to the ceiling and back
+            # and never converges.
+            cross = (u_it != 0.0) & ((u_it < 0.0) != (u_next < 0.0))
+            u_next = np.where(cross, 0.0, u_next)
             # a step in ``u`` counts as the pressure step that moves the same mass
             size = float(np.max(np.abs(u_next - u_it)))
             counter[0] += 1
             u_it = u_next
-            if size < 200.0:  # Pa
+            # (a cell just stopped on the kink has not been tried on its other side)
+            if size < 200.0 and not cross.any():  # Pa
                 converged = True
                 break
             # the factorisation is kept while it still converges fast, renewed when not
