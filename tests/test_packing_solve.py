@@ -436,3 +436,65 @@ def test_a_cell_stopped_on_the_kink_is_tried_on_its_other_side():
     assert r.shrinkage[0, 0] > 0.0
     # the mass the cell had at the switch is the mass it keeps (nothing flows)
     assert r.total_mass_kg[-1] == pytest.approx(r.initial_mass_kg, rel=1e-9)
+
+
+# ----- the layered temperature state (thermal="layers") -----
+
+
+def test_layered_state_agrees_with_the_slab_series_on_a_uniform_plate():
+    # a plate filled at once and packed: the flow carries next to no heat, so
+    # the carried state and the series reading should be the same plate
+    mask, thk, t_arr, gates = _plate(3.0, 1.0, ny=4, nx=12)
+    a = _solve(mask, thk, t_arr, gates, 60e6, 4.0)
+    b = _solve(mask, thk, t_arr, gates, 60e6, 4.0, thermal="layers")
+    assert b.thermal == "layers" and a.thermal == "series"
+    assert np.nanmean(b.shrinkage) == pytest.approx(np.nanmean(a.shrinkage), abs=1e-3)
+    assert np.nanmax(b.peak_pressure_Pa) == pytest.approx(np.nanmax(a.peak_pressure_Pa), rel=1e-3)
+
+
+def test_initial_state_from_the_arrival_times_is_the_default_layered_start():
+    mask, thk, t_arr, gates = _plate(3.0, 1.0, ny=4, nx=12)
+    theta = np.full((*mask.shape, 16), np.nan)
+    theta[mask] = slab_theta(ALPHA * t_arr[mask] / (3.0e-3) ** 2, 16)
+    a = _solve(mask, thk, t_arr, gates, 60e6, 4.0, thermal="layers")
+    b = _solve(mask, thk, t_arr, gates, 60e6, 4.0, thermal="layers", initial_theta=theta)
+    assert np.allclose(a.shrinkage, b.shrinkage, equal_nan=True, atol=1e-9)
+
+
+def test_a_hotter_start_packs_more_and_freezes_later():
+    mask, thk, t_arr, gates = _channel(nx=20, ny=3, h_mm=2.0)[:4]
+    hot = np.ones((*mask.shape, 16))  # melt that has only just arrived everywhere
+    aged = _solve(mask, thk, t_arr, gates, 60e6, 3.0, thermal="layers")
+    fresh = _solve(mask, thk, t_arr, gates, 60e6, 3.0, thermal="layers", initial_theta=hot)
+    assert fresh.added_mass_fraction > aged.added_mass_fraction
+    assert np.nanmean(fresh.molten_peak_pressure_Pa) >= np.nanmean(aged.molten_peak_pressure_Pa)
+
+
+def test_initial_state_is_checked():
+    mask, thk, t_arr, gates = _plate(3.0, 1.0, ny=4, nx=12)
+    with pytest.raises(ValueError, match="needs thermal='layers'"):
+        _solve(mask, thk, t_arr, gates, 60e6, 4.0, initial_theta=np.ones((4, 12, 16)))
+    with pytest.raises(ValueError, match="initial_theta must be"):
+        _solve(
+            mask, thk, t_arr, gates, 60e6, 4.0, thermal="layers", initial_theta=np.ones((4, 12, 8))
+        )
+    # a state with no value in most of the full cells is from another moment
+    empty = np.full((4, 12, 16), np.nan)
+    with pytest.raises(ValueError, match="no value in"):
+        _solve(mask, thk, t_arr, gates, 60e6, 4.0, thermal="layers", initial_theta=empty)
+
+
+def test_coarse_solve_takes_the_layered_state_down_to_its_blocks():
+    ny, nx = 10, 40
+    mask = np.ones((ny, nx), dtype=bool)
+    thk = np.full((ny, nx), 3.0)
+    t_arr = np.tile(np.linspace(0.0, 1.5, nx), (ny, 1))
+    gates = [(iy, 0) for iy in range(ny)]
+    theta = np.full((ny, nx, 16), np.nan)
+    theta[mask] = slab_theta(ALPHA * t_arr[mask] / (3.0e-3) ** 2, 16)
+    args = (mask, thk, t_arr, gates, 1.0, PMMA, T_MELT, T_MOLD, 60e6, 4.0)
+    fine = solve_packing(*args, thermal="layers", initial_theta=theta)
+    coarse = solve_packing_coarsened(*args, factor=2, thermal="layers", initial_theta=theta)
+    assert coarse.cell_size_mm == 2.0
+    assert coarse.shrinkage[mask].mean() == pytest.approx(fine.shrinkage[mask].mean(), abs=1.5e-3)
+    assert coarse.molten_peak_pressure_Pa.shape == mask.shape

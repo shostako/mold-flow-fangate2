@@ -353,8 +353,15 @@ def solve_packing(
         if start.shape != (*mask.shape, n_z):
             raise ValueError(f"initial_theta must be {(*mask.shape, n_z)}, got {start.shape}")
         theta_state = np.clip(start[mask], 0.0, None)
-        if not np.all(np.isfinite(theta_state[full_at_switch])):
-            raise ValueError("initial_theta has no value in a cell that is full at the switch")
+        # The state is kept by the volume delivered, the switch is found from the
+        # arrival times: a few cells that the melt reached right at the switch
+        # can be on either side. They hold melt that has only just arrived (θ = 1
+        # below). Many of them means the state is from another moment.
+        missing = full_at_switch & ~np.all(np.isfinite(theta_state), axis=1)
+        if missing.sum() > max(0.01 * full_at_switch.sum(), 4):
+            raise ValueError(
+                f"initial_theta has no value in {int(missing.sum())} cells that are full at the switch"
+            )
         theta_state = np.where(np.isfinite(theta_state), theta_state, 1.0)
     else:
         theta_state = slab_theta(alpha * t_arr / h**2, n_z)
@@ -759,6 +766,21 @@ def _coarsen(mask, thk, t_arr, gates, f):
     return c_mask, mean(thk), mean(t_arr), c_gates
 
 
+def _coarsen_theta(mask, thk, theta, f, c_mask):
+    """The layered temperature state ``(ny, nx, n_z)`` on the ``f × f`` blocks:
+    the thickness-weighted mean of the cells that hold one (a block with none
+    stays NaN, as a cell that held no melt at the switch)."""
+    ny, nx, n_z = theta.shape
+    NY, NX = c_mask.shape
+    pad = ((0, NY * f - ny), (0, NX * f - nx), (0, 0))
+    have = mask[..., None] & np.isfinite(theta)
+    w = np.where(have, thk[..., None], 0.0)
+    num = np.pad(np.where(have, theta, 0.0) * w, pad).reshape(NY, f, NX, f, n_z).sum(axis=(1, 3))
+    den = np.pad(w, pad).reshape(NY, f, NX, f, n_z).sum(axis=(1, 3))
+    out = np.where(den > 0.0, num / np.where(den > 0.0, den, 1.0), np.nan)
+    return np.where(c_mask[..., None], out, np.nan)
+
+
 def _gate_fed_everywhere(mask, gates) -> bool:
     lab, _ = ndi_label(mask)
     fed = {int(lab[iy, ix]) for iy, ix in gates}
@@ -809,6 +831,11 @@ def solve_packing_coarsened(
             mask, thk, t_arr, gate_cells, cell_size_mm, material, T_melt_K, T_mold_K,
             hold_pressure_Pa, hold_time_s, **kwargs,
         )  # fmt: skip
+    if kwargs.get("initial_theta") is not None:
+        theta = np.asarray(kwargs["initial_theta"], dtype=float)
+        if theta.shape[:2] != mask.shape:
+            raise ValueError(f"initial_theta must be {mask.shape} + (n_z,), got {theta.shape}")
+        kwargs = {**kwargs, "initial_theta": _coarsen_theta(mask, thk, theta, f, c_mask)}
     r = solve_packing(
         c_mask, c_thk, c_arr, c_gates, float(cell_size_mm) * f, material, T_melt_K, T_mold_K,
         hold_pressure_Pa, hold_time_s, **kwargs,

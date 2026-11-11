@@ -48,6 +48,7 @@ from core import (
     summarize_by_thickness,
     wrap_standalone_html,
 )
+from core.flash import flash_risk
 from core.geometry import Geometry
 from core.injection_profile import InjectionProfile, InjectionStage
 from core.packing_solve import (
@@ -63,6 +64,7 @@ from core.visualizer import (
     ISOCHRONE_LEVELS,
     THICKNESS_CMAP,
     export_two_phase_frames,
+    render_flash_risk_map,
     render_layer_grid,
     render_packing_late_fill_map,
     render_packing_pressure_history,
@@ -1121,6 +1123,8 @@ with st.sidebar:
         multilayer_tol = 1e-3
         solid_fraction = 0.3
         fill_method = "tau"
+        thermal_model = "arrival"
+        inj_p_limit_mpa = 200.0
 
         if wall_model == "skin":
             c_skin = st.slider(
@@ -1207,6 +1211,42 @@ with st.sidebar:
                     "層の温度の読み方（到着時刻で冷える）は同じで、変わるのは順番の決め方だけ。"
                     "時計は射出率どおり（速度制御）で、圧力一定の引き伸ばしは無い。"
                     "下の反復上限と収束判定は、一発で解く方だけに効く。"
+                ),
+            )
+            thermal_model = st.radio(
+                "層の温度の解き方",
+                options=("arrival", "energy"),
+                index=0,
+                key="thermal_model",
+                disabled=fill_method != "march",
+                format_func=lambda m: {
+                    "arrival": "到達時刻から読む（既定）: 届いてからの時間、その場所の肉厚で冷えたとみなす",
+                    "energy": "刻みごとに解く: 厚さ方向の温度を状態として持ち、流れが熱を運ぶ",
+                }[m],
+                help=(
+                    "時間で追う解き方のときだけ選べる。射出圧縮 ON のときは到達時刻から読む方で解く。\n"
+                    "到達時刻から読む方は、厚い所を通ってきた熱い樹脂が薄い所に入っても、最初からその薄い肉厚で"
+                    "冷えてきたものとして扱う。1 mm の額縁のような薄い所を冷たく見すぎる。\n"
+                    "刻みごとに解く方は、厚さ方向 16 層の温度を毎刻み解く（壁への熱伝導、流れが運ぶ熱、剪断発熱）。"
+                    "流れやすさはその場所の流量から決める。保圧を解くときは、VP 切替の時点の温度をそのまま保圧へ渡す。"
+                    "射出圧が下の上限に達すると流量が落ち、流れが止まればショートとして止める。"
+                    "面内（板の広がる向き）の熱の伝わりは入っていない。格子は 2 mm 以下で使う"
+                    "（4 mm は軸に対して左右対称に切れず、結果が左右で違って出る）。"
+                ),
+            )
+            if fill_method != "march":
+                thermal_model = "arrival"
+            inj_p_limit_mpa = st.number_input(
+                "射出圧の上限 [MPa]",
+                min_value=20.0,
+                max_value=400.0,
+                value=200.0,
+                step=10.0,
+                key="inj_p_limit_mpa",
+                disabled=thermal_model != "energy",
+                help=(
+                    "刻みごとに解くときだけ効く。ゲートの圧力がこの値に達すると、射出率を保てずに流量が落ちる。"
+                    "ノズルとホットランナーの圧力損失は入っていないので、機械の最大射出圧よりその分低く置く。"
                 ),
             )
             num_layers = st.slider(
@@ -1348,6 +1388,18 @@ with st.sidebar:
                 "体積のこの割合まで射出率で埋め、そこから保圧に切り替える。残りは保圧で埋める"
                 "（機械が送る量は射出率が上限）。100 にすると、全部埋まったものとして保圧だけを見る。"
                 "薄い所が保圧で埋まるかの判定は、温度の扱いが粗いので当てにならない（式解説 §9）。"
+            ),
+        )
+        machine_clamp_kN = st.number_input(
+            "機械の型締力 [kN]",
+            min_value=100.0,
+            max_value=50000.0,
+            value=4413.0,
+            step=100.0,
+            key="machine_clamp_kN",
+            disabled=not hold_on,
+            help=(
+                "保圧の結果の「バリ注意」で、型を開く力のピークと比べる。既定はソディック 450t（4,413 kN）。"
             ),
         )
         hold_coarse = st.checkbox(
@@ -1636,13 +1688,20 @@ analysis_inputs = {
             multilayer_tol,
             solid_fraction,
             shear_heating_enabled,
+            fill_method,
+            thermal_model,
+            inj_p_limit_mpa if thermal_model == "energy" else None,
         )
         if multilayer_on
         else ("none",)
     ),
     "compression_molding": (icm, comp_stroke, comp_frac),
     "two_phase_short_shot": (two_phase_on, shot_volume_cm3),
-    "holding": (hold_on, hold_p_mpa, hold_t_s, hold_vp_pct, hold_coarse) if hold_on else (False,),
+    "holding": (
+        (hold_on, hold_p_mpa, hold_t_s, hold_vp_pct, hold_coarse, machine_clamp_kN)
+        if hold_on
+        else (False,)
+    ),
     "output": (num_frames, fill_cmap, iso_levels),
 }
 STALE_RESULT_MSG = (
@@ -1680,6 +1739,12 @@ if do_run:
     if inj_error is not None:
         st.error(inj_error)
         st.stop()
+    # 刻みごとに解く温度は、射出圧縮では試していないので到達時刻から読む方に戻す
+    energy_on = multilayer_on and thermal_model == "energy" and not icm
+    if multilayer_on and thermal_model == "energy" and icm:
+        st.info(
+            "射出圧縮 ON なので、層の温度は到達時刻から読む方で解いた（刻みごとに解く方は通常成形だけ）。"
+        )
     with st.spinner("Hele-Shaw方程式を解いている…"):
         if multilayer_on:
             solver = MultilayerHeleShawSolver(
@@ -1702,6 +1767,12 @@ if do_run:
                 solidification_temperature_fraction=solid_fraction,
                 shear_heating_enabled=shear_heating_enabled,
                 fill_method=fill_method,
+                thermal_model="energy" if energy_on else "arrival",
+                injection_pressure_limit_Pa=float(inj_p_limit_mpa) * 1e6,
+                # 保圧へ渡す VP 切替の時点の温度
+                thermal_snapshot_fractions=(
+                    (float(hold_vp_pct) / 100.0,) if energy_on and hold_on else ()
+                ),
             )
         else:
             solver = HeleShawSolver(
@@ -1782,6 +1853,9 @@ if do_run:
                     "solidification_temperature_fraction": solid_fraction,
                     "shear_heating_enabled": shear_heating_enabled,
                     "fill_method": fill_method,
+                    # what was solved: "energy" falls back to "arrival" with compression on
+                    "thermal_model": "energy" if energy_on else "arrival",
+                    "injection_pressure_limit_MPa": float(inj_p_limit_mpa) if energy_on else None,
                 }
                 if multilayer_on
                 else {"model": "none"}
@@ -1813,6 +1887,7 @@ if do_run:
                     "time_s": float(hold_t_s),
                     "vp_switch_fill_percent": float(hold_vp_pct),
                     "coarse_grid": bool(hold_coarse),
+                    "machine_clamp_kN": float(machine_clamp_kN),
                 }
                 if hold_on
                 else {"enabled": False}
@@ -1890,6 +1965,8 @@ if do_run:
         _hold_late_path: Path | None = None
         _hold_rows: list[dict] | None = None
         _hold_info: dict | None = None
+        _flash_path: Path | None = None
+        _flash_info: dict | None = None
         _hold_skip: str | None = None
         if not hold_on:
             _hold_skip = HOLD_SKIP_OFF
@@ -1915,6 +1992,17 @@ if do_run:
                 * 1e-9
                 / max(float(result.total_fill_time_s), 1e-9)
             )
+            # 充填で温度を刻みごとに解いたときは、VP 切替の時点の温度を保圧へ渡す
+            _snaps = getattr(result, "thermal_snapshots", None) or {}
+            _vp = float(hold_vp_pct) / 100.0
+            _theta0 = _snaps.get(_vp)
+            if _theta0 is None and _vp >= 1.0:
+                _theta0 = (None, getattr(result, "thermal_theta_end", None))
+            _hold_thermal = (
+                {"thermal": "layers", "initial_theta": _theta0[1]}
+                if _theta0 is not None and _theta0[1] is not None
+                else {}
+            )
             _hold = None
             try:
                 with st.spinner("保圧を解いている…"):
@@ -1933,6 +2021,7 @@ if do_run:
                         factor=_hold_factor,
                         switch_fill_fraction=float(hold_vp_pct) / 100.0,
                         max_inflow_m3_s=_hold_rate,
+                        **_hold_thermal,
                     )
             except (ValueError, RuntimeError) as e:
                 # 充填の結果は済んでいる。保圧だけ理由を残して飛ばす
@@ -1968,6 +2057,33 @@ if do_run:
                     "end_time_s": float(_hold.times_s[-1]),
                     "unconverged_steps": int(_hold.unconverged_steps),
                     "rate_cap_exceeded_steps": int(_hold.rate_cap_exceeded_steps),
+                    "thermal": "layers" if _hold_thermal else "series",
+                }
+                # バリ注意（PL）: 輪郭のセルが溶けている間に受けた最大の圧力
+                _flash = flash_risk(geom, _hold, machine_clamp_N=float(machine_clamp_kN) * 1e3)
+                _flash_path = render_flash_risk_map(result, _flash, _tmp_dir / "flash_risk.png")
+
+                def _spot_row(tag, sp):
+                    return {
+                        "印": tag,
+                        "x [mm]": round(sp.x_mm, 1),
+                        "y [mm]": round(sp.y_mm, 1),
+                        "肉厚 [mm]": round(sp.thickness_mm, 2),
+                        "溶けている間の最大圧力 [MPa]": round(sp.pressure_Pa / 1e6, 1),
+                        "切替からの時刻 [s]": round(sp.time_s, 2),
+                    }
+
+                _flash_info = {
+                    "product_spots": [
+                        _spot_row(str(k), sp) for k, sp in enumerate(_flash.spots, start=1)
+                    ],
+                    "runner_spots": [
+                        _spot_row(f"R{k}", sp) for k, sp in enumerate(_flash.runner_spots, start=1)
+                    ],
+                    "clamp_peak_kN": _flash.clamp_peak_N / 1e3,
+                    "clamp_peak_time_s": _flash.clamp_peak_time_s,
+                    "machine_clamp_kN": float(machine_clamp_kN),
+                    "thermal": _hold_info["thermal"],
                 }
         _skin_path: Path | None = None
         _core_path: Path | None = None
@@ -2027,6 +2143,7 @@ if do_run:
                 _hold_path,
                 _hold_hist_path,
                 _hold_late_path,
+                _flash_path,
                 _skin_path,
                 _core_path,
                 _layer_T_grid_path,
@@ -2075,6 +2192,10 @@ if do_run:
                         indent=2,
                         ensure_ascii=False,
                     ),
+                )
+            if _flash_info is not None:
+                _zf_run.writestr(
+                    "flash_risk.json", json.dumps(_flash_info, indent=2, ensure_ascii=False)
                 )
             if two_phase_result is not None:
                 if _two_phase_player_html is not None:
@@ -2126,6 +2247,8 @@ if do_run:
         st.session_state["mfs_hold_rows"] = _hold_rows
         st.session_state["mfs_hold_info"] = _hold_info
         st.session_state["mfs_hold_skip"] = _hold_skip
+        st.session_state["mfs_flash_path"] = _flash_path
+        st.session_state["mfs_flash_info"] = _flash_info
         st.session_state["mfs_skin_path"] = _skin_path
         st.session_state["mfs_core_path"] = _core_path
         st.session_state["mfs_layer_T_grid_path"] = _layer_T_grid_path
@@ -2370,7 +2493,8 @@ if "mfs_result" in st.session_state:
                         "赤＝最後まで埋まらなかった所。機械が送る量は "
                         f"{_hi['max_inflow_cm3_s']:.1f} cm³/s を上限にしている。"
                     )
-                    st.warning(HOLD_THIN_CAVEAT)
+                    if _hi.get("thermal", "series") == "series":
+                        st.warning(HOLD_THIN_CAVEAT)
                 else:
                     st.caption("VP 切替 100 %：全部埋まったものとして、保圧だけを解いた。")
                 st.image(str(_hold_path_shown))
@@ -2396,8 +2520,14 @@ if "mfs_result" in st.session_state:
                 st.image(str(_hold_hist_shown))
                 st.caption(
                     "製品の中を肉厚ごとに集計（埋まらなかった所は除く）。圧力はゲートにかけた値で、ノズルとホットランナーの"
-                    "損失は入っていない。温度は充填と同じ板の冷え方で、保圧中に流れ込む樹脂の熱と"
-                    "型のたわみは入っていない。「固まるときの圧力」は厚さの中心が固まった時点の圧力。"
+                    "損失は入っていない。"
+                    + (
+                        "温度は、充填で刻みごとに解いた VP 切替の時点の温度から、保圧中も刻みごとに解いた"
+                        "（流れ込む樹脂が運ぶ熱を含む）。型のたわみは入っていない。"
+                        if _hi.get("thermal") == "layers"
+                        else "温度は充填と同じ板の冷え方で、保圧中に流れ込む樹脂の熱と型のたわみは入っていない。"
+                    )
+                    + "「固まるときの圧力」は厚さの中心が固まった時点の圧力。"
                 )
                 if _hi["unconverged_steps"]:
                     st.warning(
@@ -2410,6 +2540,57 @@ if "mfs_result" in st.session_state:
                         "（上限に収まるゲート圧が見つからなかった）。保圧の始めの圧力の上がり方は目安として見てください。"
                     )
                 _download("⬇ 縮みの地図 PNG", _hold_path_shown, "image/png", "dl_hold_png")
+
+        with st.expander("バリ注意（PL）"):
+            _flash_path_shown = st.session_state.get("mfs_flash_path")
+            _fi = st.session_state.get("mfs_flash_info")
+            if _flash_path_shown is None or _fi is None:
+                st.info(
+                    "保圧の計算の結果から出す。"
+                    + (st.session_state.get("mfs_hold_skip") or HOLD_SKIP_OFF)
+                )
+            else:
+                _fc0, _fc1 = st.columns(2)
+                _fc0.metric(
+                    "型を開く力の最大",
+                    f"{_fi['clamp_peak_kN']:,.0f} kN",
+                    help=f"切替から {_fi['clamp_peak_time_s']:.2f} 秒。キャビティの圧力 × 投影面積（製品＋ランナ）。",
+                )
+                _ratio = _fi["clamp_peak_kN"] / max(_fi["machine_clamp_kN"], 1e-9)
+                _fc1.metric(
+                    "機械の型締力に対して",
+                    f"{100 * _ratio:.0f} %",
+                    help=f"機械の型締力 {_fi['machine_clamp_kN']:,.0f} kN（サイドバーの保圧の欄）。",
+                )
+                if _ratio >= 1.0:
+                    st.error(
+                        "型を開く力が機械の型締力を超えている。型が開いて、PL の全周にバリが出る。"
+                        "保圧を下げるか、VP 切替を早めるか、型締力の大きい機械にする。"
+                    )
+                elif _ratio >= 0.8:
+                    st.warning(
+                        "型を開く力が機械の型締力の 8 割を超えている。型のたわみで PL が開きやすい。"
+                    )
+                if _fi["thermal"] == "series":
+                    st.warning(
+                        "温度を到達時刻から読む解き方なので、薄い所（1 mm の額縁など）は切替の時点で中心まで"
+                        "固まった扱いになり、製品の輪郭の圧力が実際より低く（0 に）出る。製品の輪郭を見るときは、"
+                        "サイドバーの層別の設定で「層の温度の解き方」を「刻みごとに解く」にして解き直す。"
+                    )
+                st.image(str(_flash_path_shown))
+                st.caption(
+                    "キャビティの輪郭（製品とランナの外周）を PL の合わせ目とみなし、輪郭の各マスが"
+                    "厚さの中心が溶けている間に受けた最大の圧力を色で示す。固まったあとの圧力は数えない"
+                    "（固まった樹脂はすき間に入らない）。黒の丸＝製品の輪郭の上位、灰色の丸＝ランナの輪郭の上位。"
+                    "ゲートに近いランナは、形によらずほぼ保圧そのものになるので、製品とは別に順位を付けている。"
+                    "すき間の深さ（ベント・摩耗）と型のたわみは入っていないので、何 MPa でバリが出るかは"
+                    "型ごとに判断する。値は順位と形どうしの比較に使う。"
+                )
+                st.markdown("**製品の輪郭**")
+                st.dataframe(_fi["product_spots"], hide_index=True)
+                st.markdown("**ランナの輪郭**")
+                st.dataframe(_fi["runner_spots"], hide_index=True)
+                _download("⬇ PNGをダウンロード", _flash_path_shown, "image/png", "dl_flash_png")
                 _download("⬇ 圧力の時間変化 PNG", _hold_hist_shown, "image/png", "dl_hold_hist_png")
 
         if two_phase_skip is not None:
