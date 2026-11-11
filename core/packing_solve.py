@@ -527,7 +527,7 @@ def solve_packing(
     next_frame = 1
     while t < end_time_s - 1e-12:
         gate_open = t < hold_time_s - 1e-12 and hold_time_s > 0.0
-        limit = hold_time_s if gate_open else end_time_s
+        limit = min(hold_time_s, end_time_s) if gate_open else end_time_s
         dt_try = min(dt, limit - t)
         if gate_open and rate_cap is not None:
             # try to come up towards the holding pressure, a factor per step

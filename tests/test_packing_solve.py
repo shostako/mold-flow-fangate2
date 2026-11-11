@@ -332,3 +332,21 @@ def test_rate_cap_slows_the_pressure_rise_of_a_full_cavity():
     assert capped.gate_pressure_Pa[np.searchsorted(capped.times_s, 1.0)] == pytest.approx(60e6)
     # the same plate in the end
     assert np.allclose(capped.shrinkage, free.shrinkage, atol=5e-4)
+
+
+def test_end_time_before_the_gate_closes_is_not_overrun():
+    mask, thk, t_arr, gates = _plate(3.0, 1.0, ny=4, nx=12)
+    seen = []
+    r = _solve(
+        mask,
+        thk,
+        t_arr,
+        gates,
+        60e6,
+        4.0,
+        end_time_s=0.001,
+        dt_first_s=0.002,
+        progress=lambda t, end: seen.append((t, end)),
+    )
+    assert r.times_s[-1] <= 0.001 + 1e-12
+    assert all(t <= end + 1e-12 for t, end in seen)
