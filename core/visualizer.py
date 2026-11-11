@@ -554,6 +554,7 @@ def render_pressure_map(
 
 #: Cells frozen through when the fill ends: no holding pressure, no colour scale.
 PACKING_FROZEN_RGB = (0.62, 0.62, 0.62)
+PACKING_UNFILLED_RGB = (0.80, 0.10, 0.12)
 
 
 def render_packing_reach_map(
@@ -610,6 +611,176 @@ def render_packing_reach_map(
         pad=0.02,
     )
     cbar.set_label("time a molten path from the gate remains [s]")
+
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    return output_path
+
+
+def render_packing_shrinkage_map(
+    result: FlowResult,
+    solve,
+    output_path: str | Path,
+) -> Path:
+    """Map of the volumetric shrinkage left after the holding phase.
+
+    ``solve`` is a :class:`core.packing_solve.PackingSolve` on the result's
+    grid. Shrinkage is red, overpacking (negative shrinkage: the part would
+    be larger than the cavity) blue, zero white.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    extent = _base_extent(result)
+    g = result.geometry
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=110)
+    _draw_geometry(ax, result)
+
+    pct = 100.0 * np.asarray(solve.shrinkage, dtype=float)
+    shown = g.mask & np.isfinite(pct)
+    top = max(float(pct[shown].max()), 0.5) if shown.any() else 0.5
+    bottom = min(float(pct[shown].min()), 0.0) if shown.any() else 0.0
+    if bottom < 0.0:
+        norm = mcolors.TwoSlopeNorm(vmin=bottom, vcenter=0.0, vmax=top)
+    else:
+        norm = mcolors.Normalize(vmin=-top, vmax=top)  # zero stays white, only the red half used
+    cmap = plt.get_cmap("RdBu_r")
+    rgba = cmap(norm(np.nan_to_num(pct, nan=0.0)))
+    rgba[..., 3] = np.where(shown, 1.0, 0.0)
+    ax.imshow(rgba, origin="lower", extent=extent, interpolation="nearest")
+
+    _draw_gate_markers(ax, result, color="lime", edgecolor="black")
+
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("y [mm]")
+    ax.set_title(
+        "Volumetric shrinkage after holding "
+        f"({solve.hold_pressure_Pa / 1e6:g} MPa, {solve.hold_time_s:g} s)"
+    )
+    cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, fraction=0.04, pad=0.02)
+    if bottom >= 0.0:
+        cbar.ax.set_ylim(0.0, top)
+    cbar.set_label("volumetric shrinkage [%]  (negative = overpacked)")
+
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    return output_path
+
+
+def render_packing_late_fill_map(
+    result: FlowResult,
+    solve,
+    output_path: str | Path,
+    cmap: str = "viridis",
+) -> Path:
+    """Map of what the holding pressure had to fill after the V/P switch.
+
+    Grey = full at the switch, colour = the time after the switch at which
+    the holding pressure filled the cell, red = never filled (short shot).
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    extent = _base_extent(result)
+    g = result.geometry
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=110)
+    _draw_geometry(ax, result)
+
+    late = np.asarray(solve.late_fill_time_s, dtype=float)
+    never = g.mask & np.isnan(late)
+    after = g.mask & np.isfinite(late) & (late > 0.0)
+    vmax = float(late[after].max()) if after.any() else 1.0
+    rgba = plt.get_cmap(cmap)(np.clip(np.nan_to_num(late, nan=0.0) / vmax, 0.0, 1.0))
+    rgba[..., 3] = np.where(g.mask, 1.0, 0.0)
+    rgba[g.mask & ~after & ~never] = (*PACKING_FROZEN_RGB, 1.0)
+    rgba[never] = (*PACKING_UNFILLED_RGB, 1.0)
+    ax.imshow(rgba, origin="lower", extent=extent, interpolation="nearest")
+
+    _draw_gate_markers(ax, result, color="lime", edgecolor="black")
+
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("y [mm]")
+    ax.set_title(
+        f"Filled by holding pressure after the V/P switch at {100 * solve.switch_fill_fraction:g} %"
+    )
+    ax.legend(
+        handles=[
+            Patch(color=PACKING_FROZEN_RGB, label="full at the switch"),
+            Patch(color=PACKING_UNFILLED_RGB, label="never filled"),
+        ],
+        loc="upper right",
+        fontsize=8,
+        framealpha=0.9,
+    )
+    cbar = fig.colorbar(
+        plt.cm.ScalarMappable(norm=mcolors.Normalize(0, vmax), cmap=cmap),
+        ax=ax,
+        fraction=0.04,
+        pad=0.02,
+    )
+    cbar.set_label("time after the switch the cell was filled [s]")
+
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    return output_path
+
+
+def render_packing_pressure_history(
+    solve,
+    thickness_mm: np.ndarray,
+    region: np.ndarray,
+    output_path: str | Path,
+    decimals: int = 1,
+) -> Path:
+    """Cavity pressure against time during and after holding, one line per
+    wall thickness inside ``region`` (the mean over that thickness), with the
+    gate's own pressure (below the holding pressure while the machine's rate
+    limits it, zero once the gate has closed)."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    region = np.asarray(region, dtype=bool) & np.isfinite(solve.shrinkage)
+    thk = np.round(np.asarray(thickness_mm, dtype=float), decimals)
+    t = np.asarray(solve.frame_times_s, dtype=float)
+    frames = np.asarray(solve.frame_pressure_Pa, dtype=float)
+
+    fig, ax = plt.subplots(figsize=(8, 4.6), dpi=110)
+    t_end = float(solve.times_s[-1])
+    ax.step(
+        np.asarray(solve.times_s, dtype=float),
+        np.asarray(solve.gate_pressure_Pa, dtype=float) / 1e6,
+        where="post",
+        color="0.55",
+        lw=1.2,
+        ls="--",
+        label="gate",
+    )
+    styles = ["-", "-.", ":", (0, (5, 1)), (0, (3, 1, 1, 1))]
+    for k, h in enumerate(sorted({float(v) for v in thk[region]}, reverse=True)):
+        sel = region & (thk == h)
+        ax.plot(
+            t,
+            frames[:, sel].mean(axis=1) / 1e6,
+            color="k",
+            ls=styles[k % len(styles)],
+            lw=1.6,
+            label=f"t = {h:g} mm (mean)",
+        )
+    ax.set_xlim(0.0, t_end)
+    ax.set_ylim(bottom=0.0)
+    ax.set_xlabel("time after the end of the fill [s]")
+    ax.set_ylabel("pressure [MPa]")
+    ax.set_title("Cavity pressure during and after holding")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=8, framealpha=0.9)
 
     fig.tight_layout()
     fig.savefig(output_path)
