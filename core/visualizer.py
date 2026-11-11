@@ -913,6 +913,74 @@ def render_weldlines(
     return output_path
 
 
+def render_flash_risk_map(
+    result: FlowResult,
+    risk,
+    output_path: str | Path,
+    cmap: str = "YlOrRd",
+) -> Path:
+    """The cavity outline (the parting line) coloured by the highest pressure
+    each cell held while its centre was still molten, with the top spots
+    numbered. ``risk`` is a :class:`core.flash.FlashRisk` on the result's grid.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    extent = _base_extent(result)
+    g = result.geometry
+    x0, y0 = g.display_origin_mm()
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=110)
+    _draw_geometry(ax, result)
+
+    mpa = np.asarray(risk.pressure_Pa, dtype=float) / 1e6
+    shown = np.asarray(risk.edge, dtype=bool) & np.isfinite(mpa)
+    top = max(float(mpa[shown].max()), 1.0) if shown.any() else 1.0
+    norm = mcolors.Normalize(vmin=0.0, vmax=top)
+    iy, ix = np.nonzero(shown)
+    # markers, not pixels: the outline is one cell wide and vanishes on a fine grid
+    ax.scatter(
+        (ix + 0.5) * g.cell_size_mm - x0,
+        (iy + 0.5) * g.cell_size_mm - y0,
+        c=mpa[iy, ix],
+        cmap=cmap,
+        norm=norm,
+        marker="s",
+        s=9,
+        linewidths=0,
+        zorder=3,
+    )
+    labelled = [(f"{k}", sp, "black") for k, sp in enumerate(risk.spots, start=1)]
+    labelled += [(f"R{k}", sp, "0.45") for k, sp in enumerate(risk.runner_spots, start=1)]
+    for tag, spot, colour in labelled:
+        ax.scatter(
+            spot.x_mm, spot.y_mm, s=180, facecolors="none", edgecolors=colour, lw=1.4, zorder=4
+        )
+        ax.annotate(
+            f"{tag}: {spot.pressure_Pa / 1e6:.0f} MPa",
+            (spot.x_mm, spot.y_mm),
+            xytext=(6, 6),
+            textcoords="offset points",
+            fontsize=8,
+            zorder=5,
+            bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "0.4", "alpha": 0.85},
+        )
+    _draw_gate_markers(ax, result, color="lime", edgecolor="black")
+
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("y [mm]")
+    ax.set_title("Flash risk on the parting line: pressure on the outline while molten")
+    cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, fraction=0.04, pad=0.02)
+    cbar.set_label("highest pressure while the centre is molten [MPa]")
+
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    return output_path
+
+
 def render_skin_layer_map(
     result: FlowResult,
     output_path: str | Path,

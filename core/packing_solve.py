@@ -197,6 +197,9 @@ class PackingSolve:
     total_mass_kg: np.ndarray  # mass in the cavity at each step
     initial_mass_kg: float
     unconverged_steps: int = 0  # steps accepted at the smallest time step without converging
+    # highest pressure while the cell's centre was molten, and its time after the switch
+    molten_peak_pressure_Pa: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
+    molten_peak_time_s: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     # steps the gate took in more than the machine rate (by over 10 %): the
     # pressure that holds the rate down could not be found in the tries allowed
     rate_cap_exceeded_steps: int = 0
@@ -470,6 +473,10 @@ def solve_packing(
     else:
         solid_now = t_freeze <= 0.0
     p_freeze[solid_now] = peak[solid_now]
+    # the highest pressure while the centre was still molten, and when: melt
+    # that can still flow is what a parting line lets out as flash
+    molten_peak = np.where(~solid_now, peak, 0.0)
+    molten_peak_t = np.zeros(n)
     times = [0.0]
     clamp = [float(peak.sum()) * dx * dx]
     added = [0.0]
@@ -659,6 +666,9 @@ def solve_packing(
         else:
             solid_now = t_freeze <= t
         just_frozen = np.isnan(p_freeze) & solid_now
+        rise = (np.isnan(p_freeze) | just_frozen) & (p > molten_peak)
+        molten_peak[rise] = p[rise]
+        molten_peak_t[rise] = t
         p_freeze[just_frozen] = p[just_frozen]
         times.append(t)
         gate_hist.append(p_try if gate_open else 0.0)
@@ -703,6 +713,8 @@ def solve_packing(
         late_fill_time_s=to_map(late_fill),
         unfilled_volume_fraction=float(vol[never_full].sum() / vol.sum()),
         peak_pressure_Pa=to_map(peak),
+        molten_peak_pressure_Pa=to_map(molten_peak),
+        molten_peak_time_s=to_map(molten_peak_t),
         freeze_pressure_Pa=to_map(p_freeze),
         end_pressure_Pa=to_map(p),
         hold_pressure_Pa=float(hold_pressure_Pa),
@@ -814,6 +826,8 @@ def solve_packing_coarsened(
         r,
         shrinkage=fine(r.shrinkage),
         peak_pressure_Pa=fine(r.peak_pressure_Pa),
+        molten_peak_pressure_Pa=fine(r.molten_peak_pressure_Pa),
+        molten_peak_time_s=fine(r.molten_peak_time_s),
         freeze_pressure_Pa=fine(r.freeze_pressure_Pa),
         end_pressure_Pa=fine(r.end_pressure_Pa),
         frame_pressure_Pa=fine(r.frame_pressure_Pa),
