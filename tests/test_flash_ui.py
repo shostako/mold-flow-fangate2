@@ -69,6 +69,16 @@ def test_layered_temperature_goes_from_the_fill_to_the_holding_solve():
         settings = json.loads(zf.read("settings.json"))
         assert settings["wall_cooling"]["thermal_model"] == "energy"
         assert settings["wall_cooling"]["injection_pressure_limit_MPa"] == 280.0
+        # the contact with the mould: Moldflow's defaults unless changed
+        assert settings["wall_cooling"]["mold_htc_W_m2K"] == {
+            "filling": 5000.0,
+            "packing": 2500.0,
+            "detached": 1250.0,
+        }
+        assert settings["holding"]["flash_threshold_MPa"] is None
+    assert md["mold_htc_fill_W_m2K"] == 5000.0
+    assert flash["threshold_MPa"] is None
+    assert "紫の枠＝バリの目安" not in shown
 
 
 def test_the_temperature_choice_needs_the_marching_fill():
@@ -81,6 +91,42 @@ def test_the_temperature_choice_needs_the_marching_fill():
     assert not at.radio(key="thermal_model").disabled
     at.radio(key="thermal_model").set_value("energy").run()
     assert not at.number_input(key="inj_p_limit_mpa").disabled
+    # the contact with the mould belongs to the carried temperature
+    assert not at.radio(key="wall_contact_model").disabled
+    assert not at.number_input(key="htc_fill").disabled
+    at.radio(key="wall_contact_model").set_value("ideal").run()
+    assert at.number_input(key="htc_fill").disabled
+    assert at.number_input(key="htc_detached").disabled
+    at.radio(key="thermal_model").set_value("arrival").run()
+    assert at.radio(key="wall_contact_model").disabled
+
+
+def test_the_wall_at_the_mold_temperature_and_a_flash_threshold():
+    at = _app()
+    at.radio(key="wall_model").set_value("multilayer")
+    at.checkbox(key="two_phase_on").set_value(False)
+    at.checkbox(key="icm_on").set_value(False)
+    at.checkbox(key="hold_on").set_value(True).run()
+    assert at.number_input(key="flash_threshold_mpa").value is None
+    at.number_input(key="hold_p_mpa").set_value(90.0)
+    at.number_input(key="hold_t_s").set_value(10.0)
+    at.number_input(key="flash_threshold_mpa").set_value(30.0).run()
+    at.radio(key="fill_method").set_value("march").run()
+    at.radio(key="thermal_model").set_value("energy").run()
+    at.radio(key="wall_contact_model").set_value("ideal").run()
+    at.button[0].click().run()
+    assert not at.exception
+    assert at.session_state["mfs_result"].metadata["mold_htc_fill_W_m2K"] is None
+    flash = at.session_state["mfs_flash_info"]
+    assert flash["threshold_MPa"] == 30.0
+    # the runner next to the gate holds about the holding pressure: above 30 MPa
+    assert flash["over_length_runner_mm"] > 0.0
+    assert "紫の枠＝バリの目安" in texts(at)
+    with zipfile.ZipFile(io.BytesIO(at.session_state["mfs_zip_bytes"])) as zf:
+        settings = json.loads(zf.read("settings.json"))
+        assert settings["wall_cooling"]["mold_htc_W_m2K"] is None
+        assert settings["holding"]["flash_threshold_MPa"] == 30.0
+        assert json.loads(zf.read("flash_risk.json"))["threshold_MPa"] == 30.0
 
 
 def test_a_fill_that_stalls_before_the_switch_hands_over_where_it_stopped():

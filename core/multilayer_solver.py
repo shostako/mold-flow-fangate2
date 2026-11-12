@@ -353,6 +353,9 @@ class MultilayerHeleShawSolver:
     #: whatever it takes breaks down there. At the limit the fill slows, and
     #: stops as a short shot when it stalls.
     injection_pressure_limit_Pa: float | None = field(default=280.0e6, kw_only=True)
+    #: energy: heat transfer coefficient between the melt and the mould during
+    #: the fill [W/(m²·K)]. ``None``: the melt's surface is at the mold temperature.
+    mold_htc_fill_W_m2K: float | None = field(default=None, kw_only=True)
 
     # Internal helper, populated in __post_init__.
     _base: HeleShawSolver = field(init=False, repr=False)
@@ -376,6 +379,8 @@ class MultilayerHeleShawSolver:
             )
         if self.thermal_model == "energy" and self.fill_method != "march":
             raise ValueError("thermal_model='energy' needs fill_method='march'")
+        if self.mold_htc_fill_W_m2K is not None and not float(self.mold_htc_fill_W_m2K) > 0.0:
+            raise ValueError(f"mold_htc_fill_W_m2K must be > 0 (got {self.mold_htc_fill_W_m2K})")
         self._base = HeleShawSolver(
             geometry=self.geometry,
             material=self.material,
@@ -519,6 +524,7 @@ class MultilayerHeleShawSolver:
                         self.energy_layers,
                         tuple(self.thermal_snapshot_fractions),
                         self.injection_pressure_limit_Pa,
+                        self.mold_htc_fill_W_m2K,
                     )
                 ),
             )
@@ -828,6 +834,7 @@ class MultilayerHeleShawSolver:
                 solid_fraction=float(self.solidification_temperature_fraction),
                 n_z=int(self.energy_layers),
                 shear_heating_enabled=bool(self.shear_heating_enabled),
+                wall_htc_W_m2K=self.mold_htc_fill_W_m2K,
             )
             n_z = melt.grid.n_z
             grid = melt.grid
@@ -944,9 +951,10 @@ class MultilayerHeleShawSolver:
                 for k, d in enumerate(depth):
                     j = int(np.clip(np.searchsorted(nodes, d) - 1, 0, n_z))
                     w = (d - nodes[j]) / (nodes[j + 1] - nodes[j])
-                    # node 0 is the centre (the first layer's value), node n_z+1 the wall (θ = 0)
+                    # node 0 is the centre (the first layer's value), node n_z+1 the
+                    # melt's surface (θ = 0 unless a contact resistance holds it up)
                     lo = theta[:, max(j - 1, 0)]
-                    hi = theta[:, j] if j < n_z else np.zeros(cav.size)
+                    hi = theta[:, j] if j < n_z else melt.surface_theta()
                     layer_T_K[k].reshape(-1)[cav] = T_mold + dT_span * ((1.0 - w) * lo + w * hi)
             else:
                 layer_T_K, layer_shear_dT_K = self._layer_temperatures(
@@ -1157,6 +1165,11 @@ class MultilayerHeleShawSolver:
                     "march_cfl": float(self.march_cfl),
                     "march_dt_max_fraction": float(self.march_dt_max_fraction),
                     "thermal_model": self.thermal_model,
+                    "mold_htc_fill_W_m2K": (
+                        None
+                        if self.mold_htc_fill_W_m2K is None or self.thermal_model != "energy"
+                        else float(self.mold_htc_fill_W_m2K)
+                    ),
                     "march_stalled": bool(st.get("march_stalled", False)),
                     "march_unreached_cells": int(np.sum(st["march_unreached"])),
                     "march_pressure_limited_steps": int(st["march_pressure_limited_steps"]),

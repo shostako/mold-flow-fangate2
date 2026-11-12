@@ -958,6 +958,20 @@ def render_flash_risk_map(
         linewidths=0,
         zorder=3,
     )
+    over = getattr(risk, "over_threshold", None)
+    if over is not None and np.any(over):
+        # the outline at or above the user's threshold: a dark rim round the markers
+        oy, ox = np.nonzero(np.asarray(over, dtype=bool))
+        ax.scatter(
+            (ox + 0.5) * g.cell_size_mm - x0,
+            (oy + 0.5) * g.cell_size_mm - y0,
+            marker="s",
+            s=26,
+            facecolors="none",
+            edgecolors="#4a0d67",
+            linewidths=1.1,
+            zorder=3.5,
+        )
     # the runner's spots crowd round the gate: they carry their tag only (the
     # table lists their pressure)
     labelled = [
@@ -991,6 +1005,15 @@ def render_flash_risk_map(
     ax.set_title("Flash risk on the parting line: pressure on the outline while molten")
     cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, fraction=0.04, pad=0.02)
     cbar.set_label("highest pressure while the centre is molten [MPa]")
+    threshold = getattr(risk, "threshold_Pa", None)
+    if threshold is not None:
+        if threshold / 1e6 <= top:
+            cbar.ax.axhline(threshold / 1e6, color="#4a0d67", lw=2.0)
+        ax.plot(
+            [], [], marker="s", ls="none", mfc="none", mec="#4a0d67", mew=1.1,
+            label=f"at or above the threshold ({threshold / 1e6:.0f} MPa)",
+        )  # fmt: skip
+        ax.legend(loc="lower right", fontsize=8, framealpha=0.9)
 
     fig.tight_layout()
     fig.savefig(output_path)

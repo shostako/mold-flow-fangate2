@@ -76,7 +76,15 @@ from scipy.ndimage import label as ndi_label
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import splu
 
-from .layer_heat import carry, conduct, flow_shares, layer_grid, shear_heating
+from .layer_heat import (
+    carry,
+    conduct,
+    flow_shares,
+    freeze_fourier,
+    layer_grid,
+    shear_heating,
+    wall_contact,
+)
 from .materials import Material
 from .packing import freeze_age_s
 
@@ -250,6 +258,8 @@ def solve_packing(
     thermal: str = "series",
     initial_theta: np.ndarray | None = None,
     shear_heating_enabled: bool = True,
+    htc_packing_W_m2K: float | None = None,
+    htc_detached_W_m2K: float | None = None,
     progress: Callable[[float, float], None] | None = None,
 ) -> PackingSolve:
     """March from the V/P switch-over until nothing flows.
@@ -272,6 +282,11 @@ def solve_packing(
     it); without it the state starts from the slab series at the arrival time.
     With ``"layers"`` the heat the flow dissipates goes into the state
     (``shear_heating_enabled``; the pressure's work on each face).
+    ``htc_packing_W_m2K`` (``"layers"`` only) is the heat transfer coefficient
+    between the melt and the mould; ``None`` puts the melt's surface at the
+    mold temperature. ``htc_detached_W_m2K`` replaces it in a cell that has
+    been full and has since shrunk away from the wall (its pressure is gone:
+    ``u < 0``); ``None`` keeps the packing value there.
     ``progress(t, end_time)`` is called after every time step.
     ``end_time_s`` defaults to the later of the holding time and the moment
     the last cell's centre solidifies. The pressure field is kept at every
@@ -288,6 +303,15 @@ def solve_packing(
     layered = thermal == "layers"
     if initial_theta is not None and not layered:
         raise ValueError("initial_theta needs thermal='layers'")
+    if htc_packing_W_m2K is None and htc_detached_W_m2K is not None:
+        raise ValueError("htc_detached_W_m2K needs htc_packing_W_m2K")
+    if htc_packing_W_m2K is not None:
+        if not layered:
+            raise ValueError("htc_packing_W_m2K needs thermal='layers'")
+        if htc_detached_W_m2K is None:
+            htc_detached_W_m2K = htc_packing_W_m2K
+        if not (float(htc_packing_W_m2K) > 0.0 and float(htc_detached_W_m2K) > 0.0):
+            raise ValueError("the heat transfer coefficients must be > 0")
     mask = np.asarray(mask, dtype=bool)
     thk = np.asarray(thickness_mm, dtype=float)
     t_arr2d = np.asarray(arrival_time_s, dtype=float)
@@ -373,12 +397,25 @@ def solve_packing(
     # the melt that will come in, and takes that melt's temperature when it does
     theta_state[~full_at_switch] = 1.0
 
-    def temperatures(t: float, dt: float, held: np.ndarray):
+    biot_per_htc = h / float(material.thermal_conductivity_W_mK)
+
+    def contact(u0: np.ndarray):
+        """The cells' contact with the mould at the start of a step: the
+        detached value where a cell that has been full holds no pressure."""
+        if htc_packing_W_m2K is None:
+            return None
+        detached = (u0 < 0.0) & ~np.isnan(late_fill)
+        htc = np.where(detached, float(htc_detached_W_m2K), float(htc_packing_W_m2K))
+        return wall_contact(htc * biot_per_htc, n_z)
+
+    def temperatures(t: float, dt: float, held: np.ndarray, wall=None):
         """Profiles at the end of a step: ``t`` after the switch, ``dt`` after
         the state. ``held`` is the mass in the cells before the step."""
         if layered:
             theta = np.where(
-                (held > 0.0)[:, None], conduct(theta_state, fourier_rate * dt, grid), theta_state
+                (held > 0.0)[:, None],
+                conduct(theta_state, fourier_rate * dt, grid, wall),
+                theta_state,
             )
         else:
             theta = slab_theta(alpha * (t_arr + t) / h**2, n_z)
@@ -474,6 +511,12 @@ def solve_packing(
     # state is no hotter than that, and the slab's own estimate (t_freeze, by
     # the melt's age) says nothing about a state handed over from the fill
     fresh_freeze = float(np.max(freeze_age_s(thk[mask], alpha, solid_fraction)))
+    if htc_packing_W_m2K is not None:
+        # behind a contact the slab cools slower: its own time, at the poorer of
+        # the two coefficients (a cell can be off the wall from the start)
+        poorest = min(float(htc_packing_W_m2K), float(htc_detached_W_m2K))
+        slowest = wall_contact(poorest * biot_per_htc, n_z)
+        fresh_freeze = float(np.max(freeze_fourier(slowest, grid, solid_fraction) / fourier_rate))
     if end_time_s is None:
         longest = fresh_freeze if layered else float(np.max(t_freeze))
         end_time_s = max(float(hold_time_s), longest) * 1.02 + 1e-3
@@ -520,7 +563,8 @@ def solve_packing(
         """One implicit step with the gate cells held at ``p_gate`` (``None``:
         gate closed); returns ``(u, mass, gate_inflow_kg, converged, iterations)``."""
         gate_open = p_gate is not None
-        theta_n, T_n = temperatures(t_new, dt, mass_old)
+        wall = contact(u0)
+        theta_n, T_n = temperatures(t_new, dt, mass_old, wall)
         iso = pvt.at_temperature(T_n, _TRANSITION_BAND_K)
         rho_z, slope_z = mean_density(iso, np.zeros(n))
         weight = quad * inverse_viscosity(theta_n, T_n)
@@ -631,6 +675,7 @@ def solve_packing(
                 fourier_rate * dt,
                 grid,
                 source=np.maximum(from_gate, 0.0),
+                wall=wall,
             )
             # the heat the flow dissipated: S_f·Δφ² per face (the pressure's work),
             # shared between the two cells as resistances in series (core.layer_heat)

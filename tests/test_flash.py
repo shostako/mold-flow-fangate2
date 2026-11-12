@@ -131,3 +131,34 @@ def test_the_map_is_drawn(tmp_path):
     risk = flash_risk(geom, _fake_solve(p), n_spots=2, min_gap_mm=4.0)
     out = render_flash_risk_map(SimpleNamespace(geometry=geom), risk, tmp_path / "flash.png")
     assert out.exists() and out.stat().st_size > 1000
+
+
+def test_a_threshold_marks_the_outline_above_it(tmp_path):
+    from core.visualizer import render_flash_risk_map
+
+    mask = np.ones((6, 10), dtype=bool)
+    thk = np.full(mask.shape, 2.0)
+    product = np.zeros(mask.shape, dtype=bool)
+    product[2:, :] = True
+    p = np.zeros(mask.shape)
+    p[0, :] = 80.0  # the runner's edge
+    p[-1, :] = np.linspace(20.0, 40.0, 10)  # the product's
+    p[3, 4] = 90.0  # inside: not on the outline
+    geom = _geom(mask, thk, product)
+    none = flash_risk(geom, _fake_solve(p))
+    assert none.threshold_Pa is None and none.over_threshold is None
+    assert none.over_length_product_mm == 0.0
+    risk = flash_risk(geom, _fake_solve(p), threshold_Pa=30.0e6)
+    assert risk.threshold_Pa == 30.0e6
+    assert not risk.over_threshold[3, 4]
+    n_product = int(np.sum(p[-1, :] >= 30.0))
+    assert risk.over_length_product_mm == pytest.approx(n_product * 2.0)
+    assert risk.over_length_runner_mm == pytest.approx(10 * 2.0)
+    out = render_flash_risk_map(SimpleNamespace(geometry=geom), risk, tmp_path / "flash.png")
+    assert out.exists() and out.stat().st_size > 1000
+    # above everything: nothing marked, the map still draws
+    high = flash_risk(geom, _fake_solve(p), threshold_Pa=200.0e6)
+    assert not high.over_threshold.any()
+    assert render_flash_risk_map(SimpleNamespace(geometry=geom), high, tmp_path / "f2.png").exists()
+    with pytest.raises(ValueError, match="threshold_Pa must be > 0"):
+        flash_risk(geom, _fake_solve(p), threshold_Pa=0.0)

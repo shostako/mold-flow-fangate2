@@ -400,7 +400,11 @@ with st.expander("📐 使用している方程式と適用範囲"):
         r" \;+\; \frac{\text{剪断の仕事}}{\rho c_p\, \Delta T}"
     )
     st.markdown(
-        "- **壁への熱伝導**: 壁は金型温度（$\\theta = 0$）。熱伝導の行列を固有分解して持ち、刻みの長さによらず厳密に進める\n"
+        "- **壁への熱伝導**: 樹脂の表面と金型の間に熱伝達係数 $h_c$ を置く（表面の熱の流れ $= h_c\\,(T_{\\text{表面}} - T_{\\text{金型}})$）。"
+        "充填・保圧・壁から離れたあと（保圧中に圧力が 0 になり、質量が足りなくなったマス）の 3 つで値を替える。既定は "
+        "5000／2500／1250 W/(m²·K) で、Moldflow の既定と同じ。効き方はビオ数 $Bi = h_c h / k$ で決まり、薄い所ほど小さく、"
+        "冷えるのが遅くなる（PMMA の 1 mm で充填中 $Bi \\approx 25$）。「表面＝金型温度」を選ぶと $h_c \\to \\infty$（v0.15 までの扱い）。"
+        "熱伝導の行列を固有分解して持ち、刻みの長さによらず厳密に進める（ビオ数は 2 % 刻みでまとめる）\n"
         "- **流れが運ぶ熱**: 面を通った樹脂の量を、層ごとの流量の配分（固まった層は 0）で分け、上流の層の温度を運ぶ。"
         "先端が入るマスは、入ってくる樹脂の流量平均の温度をすべての層に入れる（ファウンテンフロー）。ゲートからは溶融温度\n"
         "- **剪断発熱**: 面ごとの「流量 × 圧力差」を両側のマスに抵抗の比で分けて、層ごとの発熱にする。合計は圧力の仕事"
@@ -409,7 +413,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "（代表流動速度は使わない）\n"
         "- **射出圧の上限**: ゲートの圧力が上限に達すると流量が落ちる。流れが止まればショートとして止める\n"
         "- **保圧へ**: VP 切替の時点の状態をそのまま保圧の計算（§9）へ渡し、保圧中も同じ 3 つの効果を刻みごとに解く\n\n"
-        "入っていないもの: 面内（板の広がる向き）の熱伝導、壁と金型の間の熱抵抗（壁＝金型温度なので薄い所の固まりを早めに見る）、"
+        "入っていないもの: 面内（板の広がる向き）の熱伝導、金型の中の温度の分布（金型の表面は一様に金型温度）、"
         "射出圧縮成形との組み合わせ（射出圧縮 ON では到達時刻から読む方で解く）。"
         "格子は 2 mm 以下で使う。4 mm 格子は軸に対して左右対称に切れず、流れが集まる通り道が片側に寄って、結果が左右で違って出る。"
         "熱伝導と運びは刻みの中で小分けにして解く（1 刻みにマスを通り過ぎる流れで冷えすぎないように）。\n\n"
@@ -425,6 +429,8 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "固まったあとの圧力は数えない（固まった樹脂はすき間に入らない）。製品の輪郭とランナの輪郭は別々に順位を付け、"
         "上位から 20 mm 以上離れた所を 5 か所ずつ選ぶ。型を開く力（$\\int p\\, dA$ の最大）と機械の型締力も並べる。\n\n"
         "入っていないもの: すき間の深さ（ベント・摩耗）、型のたわみ、すき間に入る樹脂の流れ。何 MPa でバリが出るかは型ごとに判断する。"
+        "試作でバリが出始めた所の圧力が分かったら、保圧の欄の「バリの目安の圧力」に入れる。その圧力以上の輪郭に紫の枠が付き、長さが出る"
+        "（空欄なら線は引かない。既定の値は持たない）。"
         "層の温度を到達時刻から読む方では、薄い額縁が切替の時点で固まった扱いになり、製品の輪郭が低く（0 に）出る。"
     )
 
@@ -1167,6 +1173,8 @@ with st.sidebar:
         fill_method = "tau"
         thermal_model = "arrival"
         inj_p_limit_mpa = 280.0
+        wall_contact_model = "htc"
+        htc_fill, htc_pack, htc_detached = 5000.0, 2500.0, 1250.0
 
         if wall_model == "skin":
             c_skin = st.slider(
@@ -1289,6 +1297,57 @@ with st.sidebar:
                 help=(
                     "刻みごとに解くときだけ効く。ゲートの圧力がこの値に達すると、射出率を保てずに流量が落ちる。"
                     "ノズルとホットランナーの圧力損失は入っていないので、機械の最大射出圧よりその分低く置く。"
+                ),
+            )
+            wall_contact_model = st.radio(
+                "金型との熱の伝わり方",
+                options=("htc", "ideal"),
+                index=0,
+                key="wall_contact_model",
+                disabled=thermal_model != "energy",
+                format_func=lambda m: {
+                    "htc": "熱伝達係数（既定。Moldflow と同じ扱い）",
+                    "ideal": "表面＝金型温度（v0.15 までの扱い）",
+                }[m],
+                help=(
+                    "刻みごとに解くときだけ効く。熱伝達係数は、樹脂の表面と金型の間の熱の伝わりやすさ。"
+                    "小さいほど表面が冷えにくく、薄い所が固まるのが遅くなる。"
+                    "「表面＝金型温度」は、樹脂の表面が触れた瞬間に金型温度になる扱いで、薄い所の固まりを早めに見る。"
+                ),
+            )
+            _htc_off = thermal_model != "energy" or wall_contact_model != "htc"
+            _hc0, _hc1, _hc2 = st.columns(3)
+            htc_fill = _hc0.number_input(
+                "充填中 [W/m²K]",
+                min_value=100.0,
+                max_value=100000.0,
+                value=5000.0,
+                step=500.0,
+                key="htc_fill",
+                disabled=_htc_off,
+                help="充填中の熱伝達係数。既定 5000 は Moldflow の既定と同じ。",
+            )
+            htc_pack = _hc1.number_input(
+                "保圧中 [W/m²K]",
+                min_value=100.0,
+                max_value=100000.0,
+                value=2500.0,
+                step=250.0,
+                key="htc_pack",
+                disabled=_htc_off,
+                help="VP 切替のあとの熱伝達係数。既定 2500 は Moldflow の既定と同じ。保圧を解くときに効く。",
+            )
+            htc_detached = _hc2.number_input(
+                "離れたあと [W/m²K]",
+                min_value=100.0,
+                max_value=100000.0,
+                value=1250.0,
+                step=250.0,
+                key="htc_detached",
+                disabled=_htc_off,
+                help=(
+                    "保圧中に圧力が 0 になり、樹脂が縮んで壁から離れたマスに使う熱伝達係数。"
+                    "既定 1250 は Moldflow の既定と同じ。保圧を解くときに効く。"
                 ),
             )
             num_layers = st.slider(
@@ -1442,6 +1501,21 @@ with st.sidebar:
             disabled=not hold_on,
             help=(
                 "保圧の結果の「バリ注意」で、型を開く力のピークと比べる。既定はソディック 450t（4,413 kN）。"
+            ),
+        )
+        flash_threshold_mpa = st.number_input(
+            "バリの目安の圧力 [MPa]（空欄＝線を引かない）",
+            min_value=1.0,
+            max_value=400.0,
+            value=None,
+            step=5.0,
+            key="flash_threshold_mpa",
+            disabled=not hold_on,
+            placeholder="試作のバリの位置から決める",
+            help=(
+                "「バリ注意」の図で、輪郭が溶けている間に受けた最大の圧力がこの値以上の所に紫の枠を付け、長さを出す。"
+                "何 MPa でバリが出るかは型のすき間とたわみで決まるので、既定の値は持たない。"
+                "試作でバリが出始めた所を図の圧力と見比べて決める。"
             ),
         )
         hold_coarse = st.checkbox(
@@ -1733,6 +1807,11 @@ analysis_inputs = {
             fill_method,
             thermal_model,
             inj_p_limit_mpa if thermal_model == "energy" else None,
+            (
+                (wall_contact_model, htc_fill, htc_pack, htc_detached)
+                if thermal_model == "energy" and wall_contact_model == "htc"
+                else (wall_contact_model if thermal_model == "energy" else None)
+            ),
         )
         if multilayer_on
         else ("none",)
@@ -1740,7 +1819,15 @@ analysis_inputs = {
     "compression_molding": (icm, comp_stroke, comp_frac),
     "two_phase_short_shot": (two_phase_on, shot_volume_cm3),
     "holding": (
-        (hold_on, hold_p_mpa, hold_t_s, hold_vp_pct, hold_coarse, machine_clamp_kN)
+        (
+            hold_on,
+            hold_p_mpa,
+            hold_t_s,
+            hold_vp_pct,
+            hold_coarse,
+            machine_clamp_kN,
+            flash_threshold_mpa,
+        )
         if hold_on
         else (False,)
     ),
@@ -1811,6 +1898,9 @@ if do_run:
                 fill_method=fill_method,
                 thermal_model="energy" if energy_on else "arrival",
                 injection_pressure_limit_Pa=float(inj_p_limit_mpa) * 1e6,
+                mold_htc_fill_W_m2K=(
+                    float(htc_fill) if energy_on and wall_contact_model == "htc" else None
+                ),
                 # 保圧へ渡す VP 切替の時点の温度
                 thermal_snapshot_fractions=(
                     (float(hold_vp_pct) / 100.0,) if energy_on and hold_on else ()
@@ -1898,6 +1988,16 @@ if do_run:
                     # what was solved: "energy" falls back to "arrival" with compression on
                     "thermal_model": "energy" if energy_on else "arrival",
                     "injection_pressure_limit_MPa": float(inj_p_limit_mpa) if energy_on else None,
+                    # None: the melt's surface at the mold temperature
+                    "mold_htc_W_m2K": (
+                        {
+                            "filling": float(htc_fill),
+                            "packing": float(htc_pack),
+                            "detached": float(htc_detached),
+                        }
+                        if energy_on and wall_contact_model == "htc"
+                        else None
+                    ),
                 }
                 if multilayer_on
                 else {"model": "none"}
@@ -1930,6 +2030,9 @@ if do_run:
                     "vp_switch_fill_percent": float(hold_vp_pct),
                     "coarse_grid": bool(hold_coarse),
                     "machine_clamp_kN": float(machine_clamp_kN),
+                    "flash_threshold_MPa": (
+                        None if flash_threshold_mpa is None else float(flash_threshold_mpa)
+                    ),
                 }
                 if hold_on
                 else {"enabled": False}
@@ -2075,6 +2178,9 @@ if do_run:
                         "initial_theta": _theta,
                         "shear_heating_enabled": bool(shear_heating_enabled),
                     }
+                    if wall_contact_model == "htc":
+                        _hold_thermal["htc_packing_W_m2K"] = float(htc_pack)
+                        _hold_thermal["htc_detached_W_m2K"] = float(htc_detached)
             _hold = None
             if _hold_blocked is not None:
                 _hold_skip = _hold_blocked
@@ -2139,7 +2245,14 @@ if do_run:
                     "thermal": "layers" if _hold_thermal else "series",
                 }
                 # バリ注意（PL）: 輪郭のセルが溶けている間に受けた最大の圧力
-                _flash = flash_risk(geom, _hold, machine_clamp_N=float(machine_clamp_kN) * 1e3)
+                _flash = flash_risk(
+                    geom,
+                    _hold,
+                    machine_clamp_N=float(machine_clamp_kN) * 1e3,
+                    threshold_Pa=(
+                        None if flash_threshold_mpa is None else float(flash_threshold_mpa) * 1e6
+                    ),
+                )
                 _flash_path = render_flash_risk_map(result, _flash, _tmp_dir / "flash_risk.png")
 
                 def _spot_row(tag, sp):
@@ -2163,6 +2276,11 @@ if do_run:
                     "clamp_peak_time_s": _flash.clamp_peak_time_s,
                     "machine_clamp_kN": float(machine_clamp_kN),
                     "thermal": _hold_info["thermal"],
+                    "threshold_MPa": (
+                        None if _flash.threshold_Pa is None else _flash.threshold_Pa / 1e6
+                    ),
+                    "over_length_product_mm": _flash.over_length_product_mm,
+                    "over_length_runner_mm": _flash.over_length_runner_mm,
                 }
         _skin_path: Path | None = None
         _core_path: Path | None = None
@@ -2658,9 +2776,25 @@ if "mfs_result" in st.session_state:
                         "固まった扱いになり、製品の輪郭の圧力が実際より低く（0 に）出る。製品の輪郭を見るときは、"
                         "サイドバーの層別の設定で「層の温度の解き方」を「刻みごとに解く」にして解き直す。"
                     )
+                if _fi.get("threshold_MPa") is not None:
+                    _ft0, _ft1 = st.columns(2)
+                    _ft0.metric(
+                        f"目安 {_fi['threshold_MPa']:.0f} MPa 以上（製品の輪郭）",
+                        f"{_fi['over_length_product_mm']:,.0f} mm",
+                        help="輪郭のマスの数 × マスの大きさ。斜めや曲線の輪郭は実際より長めに出る。",
+                    )
+                    _ft1.metric(
+                        f"目安 {_fi['threshold_MPa']:.0f} MPa 以上（ランナの輪郭）",
+                        f"{_fi['over_length_runner_mm']:,.0f} mm",
+                    )
                 st.image(str(_flash_path_shown))
                 st.caption(
-                    "キャビティの輪郭（製品とランナの外周）を PL の合わせ目とみなし、輪郭の各マスが"
+                    (
+                        "紫の枠＝バリの目安の圧力以上の所。"
+                        if _fi.get("threshold_MPa") is not None
+                        else ""
+                    )
+                    + "キャビティの輪郭（製品とランナの外周）を PL の合わせ目とみなし、輪郭の各マスが"
                     "厚さの中心が溶けている間に受けた最大の圧力を色で示す。固まったあとの圧力は数えない"
                     "（固まった樹脂はすき間に入らない）。黒の丸＝製品の輪郭の上位、灰色の丸＝ランナの輪郭の上位。"
                     "表の「最大圧力」はこの溶けている間の最大、「時刻」は VP 切替からの秒。"
