@@ -198,3 +198,39 @@ def test_shear_heating_puts_the_heat_where_the_melt_is_sheared():
     assert capped.max() == pytest.approx(0.25)
     # nothing flows: nothing is heated
     assert np.all(shear_heating(heat, np.zeros((1, 16)), volume, capacity, span, g) == 0.0)
+
+
+def test_carried_heat_does_not_depend_on_the_step():
+    # a 1 mm channel of full cells with a steady flow, at about the rates of a
+    # fill: one step passes 1.5 cells' worth of melt (2.25 on the centre layer).
+    # Without the substeps the centre came out 0.54 at 20 mm on this step and
+    # 0.90 on a short one.
+    from core.layer_heat import carry
+
+    g = layer_grid(16)
+    alpha, h, dx, w, q = 1.1e-7, 1e-3, 1e-3, 20e-3, 1.2e-6
+    n = 41
+    held = np.full(n, dx * w * h)
+    held[-1] = 1e3  # a sink
+    fa = np.arange(n - 1)
+    fb = fa + 1
+
+    def steady(dt):
+        th = np.ones((n, 16))
+        t = 0.0
+        while t < 2.0:
+            sh = flow_shares(np.where(th > 0.3, 1.0, 0.0), g)
+            src = np.zeros(n)
+            src[0] = q * dt
+            th, _ = carry(
+                th, sh, held, fa, fb, np.full(n - 1, q * dt), np.zeros(n, bool),
+                np.full(n, alpha * dt / h**2), g, source=src,
+            )  # fmt: skip
+            t += dt
+        return th[[5, 10, 20, 35], 0]
+
+    coarse = steady(0.025)
+    fine = steady(0.0005)
+    assert np.allclose(coarse, fine, atol=0.02)
+    # the Graetz entry: the centre cools slowly over a few cm
+    assert fine[0] > 0.98 and 0.85 < fine[2] < 0.95

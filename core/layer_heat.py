@@ -33,6 +33,7 @@ temperature).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -52,6 +53,21 @@ class LayerGrid:
     @property
     def n_z(self) -> int:
         return int(self.xi.size)
+
+
+_TRANSPOSES: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+
+
+def _transposes(grid: LayerGrid) -> tuple[np.ndarray, np.ndarray]:
+    """``modes_inv.T`` and ``modes.T`` as contiguous arrays (a matrix product
+    with a transposed view is several times slower)."""
+    key = id(grid)
+    if key not in _TRANSPOSES:
+        _TRANSPOSES[key] = (
+            np.ascontiguousarray(grid.modes_inv.T),
+            np.ascontiguousarray(grid.modes.T),
+        )
+    return _TRANSPOSES[key]
 
 
 @lru_cache(maxsize=8)
@@ -87,9 +103,18 @@ def conduct(theta: np.ndarray, fourier_step: np.ndarray, grid: LayerGrid) -> np.
     ``theta`` is ``(n, n_z)``, ``fourier_step`` ``(n,)``. Exact in time for the
     layered slab, whatever the step.
     """
-    coeff = theta @ grid.modes_inv.T
-    coeff *= np.exp(np.outer(np.asarray(fourier_step, dtype=float), grid.decay))
-    out = coeff @ grid.modes.T
+    return conduct_by(theta, decay_factors(fourier_step, grid), grid)
+
+
+def decay_factors(fourier_step: np.ndarray, grid: LayerGrid) -> np.ndarray:
+    """``exp(Fo·λ_j)`` per cell and mode, ``(n, n_z)``: what :func:`conduct_by`
+    multiplies the modes by (computed once for repeated equal steps)."""
+    return np.exp(np.outer(np.asarray(fourier_step, dtype=float), grid.decay))
+
+
+def conduct_by(theta: np.ndarray, factors: np.ndarray, grid: LayerGrid) -> np.ndarray:
+    """:func:`conduct` with the factors of :func:`decay_factors` given."""
+    out = ((theta @ _transposes(grid)[0]) * factors) @ _transposes(grid)[1]
     # the exact operator keeps 0 ≤ θ ≤ 1 up to round-off
     return np.clip(out, 0.0, None)
 
@@ -161,9 +186,11 @@ def advect(
 
     inflow = np.bincount(taker, amount, minlength=n)
     # full cells: layer by layer, at the donor's same layer
-    carried = np.empty((n, n_z))
-    for k in range(n_z):
-        carried[:, k] = np.bincount(taker, amount * theta[donor, k], minlength=n)
+    carried = np.bincount(
+        (taker[:, None] * n_z + np.arange(n_z)[None, :]).ravel(),
+        (amount[:, None] * theta[donor]).ravel(),
+        minlength=n * n_z,
+    ).reshape(n, n_z)
     # filling cells: the donor's flow-weighted mean, on every layer
     donor_bulk = np.einsum("ij,ij->i", shares, theta)
     stagnant = shares.sum(axis=1) <= 0.0
@@ -190,6 +217,77 @@ def advect(
     out = np.where(filling[:, None], fill_new, full_new)
     # a cell nothing flowed into keeps its profile to the last bit
     return np.where(inflow[:, None] > 0.0, out, theta)
+
+
+def carry(
+    theta: np.ndarray,
+    shares: np.ndarray,
+    held: np.ndarray,
+    face_a: np.ndarray,
+    face_b: np.ndarray,
+    moved_a_to_b: np.ndarray,
+    filling: np.ndarray,
+    fourier_step: np.ndarray,
+    grid: LayerGrid,
+    *,
+    source: np.ndarray | None = None,
+    max_courant: float = 0.1,
+    max_fourier: float = 5e-5,
+    max_substeps: int = 400,
+) -> tuple[np.ndarray, int]:
+    """Conduction (:func:`conduct`) and the flow's transport (:func:`advect`)
+    over one step, split into substeps; returns ``(theta, substeps)``.
+
+    :func:`advect` treats each layer of a cell as a mixed tank. When a step
+    passes more than a tank's content through it, the melt still spends the
+    whole step's conduction in the cell, so it reaches the next cell colder
+    than it would: the error grows with the Courant number of the layer (what
+    flows into it over the step ÷ what it holds). In a 1 mm channel at the
+    rates of a fill this cooled the centre by 0.3--0.4 in 20 mm where it
+    cools by 0.1. The flow of the step is spread evenly over substeps of
+    Courant number at most ``max_courant`` (0.1: within about 0.01 of a short
+    step) -- except where a cell hardly cools over the step (``α·dt/h²`` per
+    substep below ``max_fourier``): a parcel that crosses it is not cooled
+    by the error that counts on every full cell's layers
+    (a filling cell mixes what comes in anyway). ``fourier_step`` is
+    ``α·dt/h²`` per cell for the whole step; ``held`` is what the cells hold
+    before it, and grows by the step's net inflow as the substeps go.
+    Conduction acts where a cell holds melt.
+    """
+    n = theta.shape[0]
+    moved = np.asarray(moved_a_to_b, dtype=float)
+    src = np.zeros(n) if source is None else np.asarray(source, dtype=float)
+    held = np.asarray(held, dtype=float)
+    inflow = (
+        np.bincount(face_b[moved > 0.0], moved[moved > 0.0], minlength=n)
+        + np.bincount(face_a[moved < 0.0], -moved[moved < 0.0], minlength=n)
+        + src
+    )
+    net = np.bincount(face_b, moved, minlength=n) - np.bincount(face_a, moved, minlength=n) + src
+    full = (~np.asarray(filling, dtype=bool)) & (held > 0.0)
+    layer_held = held[:, None] * (grid.wt / 0.5)[None, :]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        courant = np.where(
+            full[:, None] & (layer_held > 0.0), inflow[:, None] * shares / layer_held, 0.0
+        )
+    fo_step = np.broadcast_to(np.asarray(fourier_step, dtype=float), (n,))
+    c_cell = courant.max(axis=1) if courant.size else np.zeros(n)
+    # a substep for each max_courant of Courant number, but no more than keeps
+    # the conduction a parcel picks up per cell it crosses below max_fourier:
+    # a thick cell near the gate is crossed fast but hardly cools in a step
+    need = np.where(
+        c_cell > 0.5 * max_courant, np.minimum(c_cell / max_courant, fo_step / max_fourier), 1.0
+    )
+    worst = float(np.max(need)) if need.size else 1.0
+    m = int(min(max(math.ceil(worst), 1), max_substeps))
+    factors = decay_factors(fo_step / m, grid)
+    th = theta
+    h_now = held.copy()
+    for _ in range(m):
+        th = np.where((h_now > 0.0)[:, None], conduct_by(th, factors, grid), th)
+        th = advect(th, shares, h_now, face_a, face_b, moved / m, filling, grid, source=src / m)
+        h_now = np.maximum(h_now + net / m, 0.0)
+    return th, m
 
 
 def face_dissipation(

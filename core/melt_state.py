@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .layer_heat import advect, conduct, face_dissipation, flow_shares, layer_grid, shear_heating
+from .layer_heat import carry, face_dissipation, flow_shares, layer_grid, shear_heating
 from .materials import Material
 from .packing_solve import _LN_S_GRID, _cross_table
 
@@ -73,6 +73,8 @@ class MeltState:
         self.ln_grad = np.full(self.n, -np.inf)  # of the last conductance, to start the next from
         self.dissipated_J = 0.0  # running sums, for the energy balance
         self.heated_J = 0.0
+        self.last_substeps = 1  # transport substeps the last step took (layer_heat.carry)
+        self.max_substeps_seen = 1
 
     # ------------------------------------------------------------------ rheology
     def zero_shear_inverse_viscosity(self, theta: np.ndarray) -> np.ndarray:
@@ -169,22 +171,21 @@ class MeltState:
         """
         g = self.grid
         s_before, _, inv_eta = self.flow_state()
-        th = np.where(
-            (held_m3 > 0.0)[:, None],
-            conduct(self.theta, self.fourier_rate * dt_s, g),
+        # conduction and transport together, in substeps short enough for the
+        # transport (core.layer_heat.carry)
+        th, self.last_substeps = carry(
             self.theta,
-        )
-        th = advect(
-            th,
             flow_shares(inv_eta, g),
             held_m3,
             face_a,
             face_b,
             moved_m3,
             ~full,
+            self.fourier_rate * dt_s,
             g,
             source=gate_in_m3,
         )
+        self.max_substeps_seen = max(self.max_substeps_seen, self.last_substeps)
         if self.heating and pressure_drop_Pa is not None:
             heat = face_dissipation(
                 face_a, face_b, s_before[face_a], s_before[face_b], pressure_drop_Pa, dt_s, self.n

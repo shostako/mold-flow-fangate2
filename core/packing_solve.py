@@ -76,7 +76,7 @@ from scipy.ndimage import label as ndi_label
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import splu
 
-from .layer_heat import advect, conduct, flow_shares, layer_grid
+from .layer_heat import carry, conduct, flow_shares, layer_grid
 from .materials import Material
 from .packing import freeze_age_s
 
@@ -598,15 +598,19 @@ def solve_packing(
             inv_eta = inverse_viscosity(theta_n, T_n) * np.exp(
                 ln_f_tab[k] * (1.0 - w) + ln_f_tab[k + 1] * w
             )
-            # (the melt that comes in through the gate is at the melt temperature)
-            theta_new = advect(
-                theta_n,
+            # (the melt that comes in through the gate is at the melt temperature).
+            # Conduction and transport from the step's start, in substeps short
+            # enough for the transport; theta_n above (conduction only) is what
+            # the step's densities and viscosities were read from.
+            theta_new, _ = carry(
+                theta_state,
                 flow_shares(inv_eta, grid),
                 mass_old,
                 f_j,
                 f_i,
                 flow * dt,
                 u0 < 0.0,
+                fourier_rate * dt,
                 grid,
                 source=np.maximum(from_gate, 0.0),
             )
