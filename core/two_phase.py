@@ -372,6 +372,14 @@ def solve_two_phase_short_shot(
         take = _prefix_by_volume(tau1[sel], vol_open[sel], V_shot_mm3)
         omega1[sel] = take
 
+    if skin_meta.get("injection_stalled_cells") and fp is not None:
+        # a stalled march: its own clock is the record of what happened. The
+        # volume map would stretch the cells it reached over the nominal time
+        # of the whole cavity; the injection ends when its last cell was filled.
+        t_arr1 = np.where(reachable, np.asarray(fp["t_arr"], dtype=float), np.nan)
+        if omega1.any():
+            T_inj = float(np.nanmax(t_arr1[omega1]))
+            skin_meta["injection_time_from_stalled_march_s"] = T_inj
     injection_fill_time_s = np.where(omega1, t_arr1, np.nan)
     if fp is not None and fp["short_shot_mask_end"] is not None:
         # Diagnostic only: pool cells whose centre layer fell below the

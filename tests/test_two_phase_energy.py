@@ -42,6 +42,10 @@ def test_cells_a_stalled_fill_never_reached_stay_out_of_the_shot():
     tp = solve_two_phase_short_shot(solver, full_shot)
     assert not (tp.injection_mask & unreached).any()
     assert tp.metadata["injection_stalled_cells"] == int(unreached.sum())
+    # the clock is the march's: every pool cell has arrived by the injection's end
+    t_pool = tp.injection_fill_time_s[tp.injection_mask]
+    assert np.nanmax(t_pool) == tp.injection_time_s
+    assert np.allclose(t_pool, np.asarray(main.fill_time_s)[tp.injection_mask], rtol=1e-6)
     # no compression: what the injection left empty stays empty in the final state
     assert np.array_equal(tp.final_mask, tp.injection_mask)
 
