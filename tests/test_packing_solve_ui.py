@@ -97,6 +97,7 @@ def test_holding_solve_shows_shrinkage_pressure_and_the_table():
             "time_s": 10.0,
             "vp_switch_fill_percent": 99.0,
             "coarse_grid": False,
+            "machine_clamp_kN": 4413.0,
         }
         assert names.count("packing_late_fill.png") == 1
 

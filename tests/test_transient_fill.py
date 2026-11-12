@@ -377,3 +377,79 @@ def test_a_staged_profile_reaches_the_marcher_with_its_switches():
     finally:
         ms.march_fill = real
     assert np.max(np.abs(r_nb.fill_time_s[1] - f_tau)) > 3 * t_cell_fast
+
+
+def _limited_strip(nx=30):
+    mask = np.ones((1, nx), dtype=bool)
+    cap = np.full((1, nx), 1.0 * MM3)
+    Q = 10.0 * MM3
+    return mask, cap, Q
+
+
+def test_a_conductance_that_grows_with_the_flow_is_not_a_stall():
+    # the first steps at the limit pass almost nothing (as a zero-shear start
+    # of a shear-thinning melt would); on_step lifts the conductance tenfold a
+    # step until it lets the programmed rate through
+    mask, cap, Q = _limited_strip()
+    level = {"s": 1e-22}
+
+    def grow(st):
+        level["s"] = min(level["s"] * 10.0, 1e-12)
+        return np.full(mask.size, level["s"])
+
+    # (a cell the front reaches takes the level reached so far, as the fed flux does)
+    res = march_fill(
+        mask, cap, [(0, 0)], lambda t: Q * t, lambda idx, t: np.full(idx.shape, level["s"]),
+        t_start_s=0.1, dt_max_s=0.05, on_step=grow, pressure_limit_Pa=1e6,
+    )  # fmt: skip
+    assert not res.stalled
+    assert res.complete
+
+
+def test_a_conductance_that_stays_shut_is_a_stall():
+    mask, cap, Q = _limited_strip()
+    res = march_fill(
+        mask, cap, [(0, 0)], lambda t: Q * t, lambda idx, t: np.full(idx.shape, 1e-22),
+        t_start_s=0.1, dt_max_s=0.05, pressure_limit_Pa=1e6,
+    )  # fmt: skip
+    assert res.stalled and not res.complete
+
+
+def test_a_held_back_screw_changes_stage_by_the_volume_it_delivered():
+    # two stages by screw position: slow up to 10 cells' worth, fast after. The
+    # pressure limit holds the first stage to a fraction of its rate, so on the
+    # wall clock the switch time passes long before the screw is there. The
+    # fast stage must still begin only when 10 cells' worth has gone in.
+    nx = 30
+    mask = np.ones((1, nx), dtype=bool)
+    cap = np.full((1, nx), 1.0 * MM3)
+    q1, q2 = 2.0 * MM3, 20.0 * MM3
+    v_switch = 10.0 * MM3
+    t_switch = v_switch / q1
+
+    def vol(t):
+        return q1 * t if t <= t_switch else v_switch + q2 * (t - t_switch)
+
+    seen = []
+    level = {"s": 1e-15}
+
+    def watch(st):
+        seen.append((st.volume_injected_m3 - st.gate_in_m3.sum(), st.gate_in_m3.sum() / st.dt_s))
+        # the melt path opens up once the wall clock is past the nominal switch
+        # time: from there the limit no longer binds
+        level["s"] = 1e-9 if st.t_s + st.dt_s > t_switch else 1e-15
+        return np.full(mask.size, level["s"])
+
+    res = march_fill(
+        mask, cap, [(0, 0)], vol, lambda idx, t: np.full(idx.size, level["s"]),
+        t_start_s=1.0 * MM3 / q1, dt_max_s=0.2,
+        breakpoints_s=(t_switch,), pressure_limit_Pa=2e3, on_step=watch, max_steps=20000,
+        stall_steps=10**9,
+    )  # fmt: skip
+    assert res.pressure_limited_steps > 0
+    before = [q for v0, q in seen if v0 < v_switch * (1 - 1e-6)]
+    # nothing came in faster than the first stage's rate before its volume was in
+    assert max(before) <= q1 * (1 + 1e-6)
+    # and the cavity never took more than it holds
+    assert res.volume_held_m3 <= cap.sum() * (1 + 1e-9)
+    assert res.volume_injected_m3 <= cap.sum() * (1 + 1e-6)

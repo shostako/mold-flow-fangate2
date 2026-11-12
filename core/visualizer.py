@@ -412,12 +412,21 @@ def fill_frame_times(result: FlowResult, num_frames: int) -> np.ndarray:
     return np.linspace(t_max / num_frames, t_max, num_frames)
 
 
+def filled_at(result: FlowResult, t: float) -> np.ndarray:
+    """Cells that hold melt at time ``t``. Cells the melt never reaches
+    (``unfillable_mask``: sealed off, or beyond a fill that stalled) never do,
+    whatever their ``fill_time_s`` holds for the maps."""
+    filled = result.fill_time_s <= t
+    dead = getattr(result, "unfillable_mask", None)
+    return filled & ~dead if dead is not None else filled
+
+
 def fill_frame_fractions(result: FlowResult, num_frames: int) -> np.ndarray:
     """Filled area fraction (0..1) of the cavity at each frame time."""
     g = result.geometry
     cells = max(int(g.mask.sum()), 1)
     times = fill_frame_times(result, num_frames)
-    return np.array([float((g.mask & (result.fill_time_s <= t)).sum()) / cells for t in times])
+    return np.array([float((g.mask & filled_at(result, t)).sum()) / cells for t in times])
 
 
 def render_fill_animation(
@@ -488,7 +497,7 @@ def render_fill_animation(
 
     def update(frame_idx):
         t = frames_t[frame_idx]
-        filled = result.fill_time_s <= t
+        filled = filled_at(result, t)
         overlay_im.set_array(_unfilled_overlay(result, filled))
         progress = float(filled[g.mask].sum()) / max(int(g.mask.sum()), 1)
         title_obj.set_text(_fill_title(result, t, progress, long=True))
@@ -906,6 +915,82 @@ def render_weldlines(
     for patch in legend_extra:
         seen[patch.get_label()] = patch
     ax.legend(seen.values(), seen.keys(), loc="upper right", fontsize=8)
+
+    fig.tight_layout()
+    fig.savefig(output_path)
+    plt.close(fig)
+    return output_path
+
+
+def render_flash_risk_map(
+    result: FlowResult,
+    risk,
+    output_path: str | Path,
+    cmap: str = "YlOrRd",
+) -> Path:
+    """The cavity outline (the parting line) coloured by the highest pressure
+    each cell held while its centre was still molten, with the top spots
+    numbered. ``risk`` is a :class:`core.flash.FlashRisk` on the result's grid.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    extent = _base_extent(result)
+    g = result.geometry
+    x0, y0 = g.display_origin_mm()
+
+    fig, ax = plt.subplots(figsize=(8, 6), dpi=110)
+    _draw_geometry(ax, result)
+
+    mpa = np.asarray(risk.pressure_Pa, dtype=float) / 1e6
+    shown = np.asarray(risk.edge, dtype=bool) & np.isfinite(mpa)
+    top = max(float(mpa[shown].max()), 1.0) if shown.any() else 1.0
+    norm = mcolors.Normalize(vmin=0.0, vmax=top)
+    iy, ix = np.nonzero(shown)
+    # markers, not pixels: the outline is one cell wide and vanishes on a fine grid
+    ax.scatter(
+        (ix + 0.5) * g.cell_size_mm - x0,
+        (iy + 0.5) * g.cell_size_mm - y0,
+        c=mpa[iy, ix],
+        cmap=cmap,
+        norm=norm,
+        marker="s",
+        s=9,
+        linewidths=0,
+        zorder=3,
+    )
+    # the runner's spots crowd round the gate: they carry their tag only (the
+    # table lists their pressure)
+    labelled = [
+        (f"{k}: {sp.pressure_Pa / 1e6:.0f} MPa", sp, "black")
+        for k, sp in enumerate(risk.spots, start=1)
+    ]
+    labelled += [(f"R{k}", sp, "0.45") for k, sp in enumerate(risk.runner_spots, start=1)]
+    for text, spot, colour in labelled:
+        ax.scatter(
+            spot.x_mm, spot.y_mm, s=180, facecolors="none", edgecolors=colour, lw=1.4, zorder=4
+        )
+        ax.annotate(
+            text,
+            (spot.x_mm, spot.y_mm),
+            # inward, so that a spot on the outline does not put its label off the plot
+            xytext=(8 if spot.x_mm <= 0.0 else -8, 8 if spot.y_mm <= 0.0 else -8),
+            ha="left" if spot.x_mm <= 0.0 else "right",
+            va="bottom" if spot.y_mm <= 0.0 else "top",
+            textcoords="offset points",
+            fontsize=8,
+            zorder=5,
+            bbox={"boxstyle": "round,pad=0.2", "fc": "white", "ec": "0.4", "alpha": 0.85},
+        )
+    _draw_gate_markers(ax, result, color="lime", edgecolor="black")
+
+    ax.set_xlim(extent[0], extent[1])
+    ax.set_ylim(extent[2], extent[3])
+    ax.set_aspect("equal")
+    ax.set_xlabel("x [mm]")
+    ax.set_ylabel("y [mm]")
+    ax.set_title("Flash risk on the parting line: pressure on the outline while molten")
+    cbar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), ax=ax, fraction=0.04, pad=0.02)
+    cbar.set_label("highest pressure while the centre is molten [MPa]")
 
     fig.tight_layout()
     fig.savefig(output_path)
@@ -1364,7 +1449,7 @@ def export_frames(
     out_paths: list[Path] = []
     try:
         for k, t in enumerate(frames_t):
-            filled = result.fill_time_s <= t
+            filled = filled_at(result, t)
             overlay_im.set_array(_unfilled_overlay(result, filled))
             title_obj.set_text(
                 _fill_title(result, t, filled[g.mask].sum() / max(int(g.mask.sum()), 1))
