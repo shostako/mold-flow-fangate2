@@ -519,6 +519,14 @@ class HeleShawSolver:
         out = np.asarray(volume_mm3, dtype=float) / 1000.0 / Q
         return out if out.ndim else float(out)
 
+    def programmed_mean_rate_cm3s(self, volume_mm3: float) -> float:
+        """Mean rate [cm³/s] at which the configured injection (profile or
+        constant rate) delivers ``volume_mm3``: the volume over the time the
+        machine program takes for it. Unlike a solved fill time, it does not
+        change when a fill slows at a pressure limit or stalls."""
+        t = float(self._injection_time_for_volume_s(float(volume_mm3)))
+        return float(volume_mm3) / 1000.0 / max(t, 1e-12)
+
     def _baseline_fill_time(self, geom: Geometry) -> float:
         """Skin-free fill time [s] of ``geom`` at constant Q.
 

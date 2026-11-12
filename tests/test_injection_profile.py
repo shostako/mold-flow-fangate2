@@ -560,3 +560,31 @@ def test_two_phase_injection_time_comes_from_the_profile():
     assert res.injection_time_s == pytest.approx(p.time_at_volume_mm3(V_shot * 1000.0))
     # Slower than the constant-rate reading of the same shot.
     assert res.injection_time_s > V_shot / p.mean_rate_cm3s
+
+
+def test_programmed_mean_rate_follows_the_profile_not_a_solved_fill():
+    # the holding phase's machine-rate cap: the volume over the time the
+    # program takes for it, whatever a solved fill (stalled or slowed) took
+    prof = _staged(v1=20.0, v2=200.0)
+    PMMA = MaterialDB()["PMMA"]
+    solver = HeleShawSolver(
+        geometry=_strip(),
+        material=PMMA,
+        melt_temperature_K=533.15,
+        mold_temperature_K=333.15,
+        injection_velocity_mms=100.0,
+        injection_profile=prof,
+    )
+    v = 0.6 * prof.total_volume_mm3
+    assert solver.programmed_mean_rate_cm3s(v) == pytest.approx(
+        v / 1000.0 / prof.time_at_volume_mm3(v)
+    )
+    flat = HeleShawSolver(
+        geometry=_strip(),
+        material=PMMA,
+        melt_temperature_K=533.15,
+        mold_temperature_K=333.15,
+        injection_velocity_mms=100.0,
+        injection_volume_flow_cm3s=12.5,
+    )
+    assert flat.programmed_mean_rate_cm3s(5000.0) == pytest.approx(12.5)

@@ -2025,14 +2025,15 @@ if do_run:
                 coarsening_factor(int(geom.mask.sum()), HOLD_MAX_CELLS) if hold_coarse else 1
             )
             # 機械が送れる量の上限。射出率が決まっていればその値、プロファイルのときは
-            # 充填全体の平均（キャビティの体積 ÷ 充填時間）
+            # 設定した射出がキャビティの体積を送る平均（解いた充填時間は、射出圧の上限で
+            # 遅れたり止まったりすると機械の速さを表さないので使わない）
             _hold_rate = (
                 float(inj_Q) * 1e-6
                 if inj_Q
-                else float(geom.thickness_mm[geom.mask].sum())
-                * geom.cell_size_mm**2
-                * 1e-9
-                / max(float(result.total_fill_time_s), 1e-9)
+                else getattr(solver, "_base", solver).programmed_mean_rate_cm3s(
+                    float(geom.thickness_mm[geom.mask].sum()) * geom.cell_size_mm**2
+                )
+                * 1e-6
             )
             # 充填で温度を刻みごとに解いたときは、VP 切替の時点の温度を保圧へ渡す
             _arrival = np.asarray(result.fill_time_s, dtype=float)
