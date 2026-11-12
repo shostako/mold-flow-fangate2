@@ -319,6 +319,14 @@ def solve_two_phase_short_shot(
         # reading of the layer model has no exposure clock to stop).
         fp = multilayer._fixed_point(h_open, gate_dirichlet, T_open_total, rate_controlled=True)
         tau1 = fp["tau"]
+        if fp.get("march_stalled") and fp.get("march_unreached") is not None:
+            # the fill stalled (thermal_model="energy": the pressure limit, or a
+            # path that froze): cells it never reached hold no melt whatever the
+            # shot, so they leave the reachable region like a sealed-off pocket
+            stalled_off = np.asarray(fp["march_unreached"], dtype=bool) & reachable
+            dead1 |= stalled_off
+            reachable &= ~stalled_off
+            skin_meta["injection_stalled_cells"] = int(stalled_off.sum())
         skin_meta.update(
             {
                 "wall_model": "multilayer",
