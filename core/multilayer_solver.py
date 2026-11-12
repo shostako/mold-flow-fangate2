@@ -1236,4 +1236,10 @@ class MultilayerHeleShawSolver:
             thermal_theta_end=st.get("thermal_theta_end"),
             thermal_snapshots=st.get("thermal_snapshots"),
             unreached_mask=st.get("march_unreached"),
+            # the fill animation and its progress keep these cells unfilled
+            unfillable_mask=(
+                st["march_unreached"]
+                if st.get("march_unreached") is not None and np.any(st["march_unreached"])
+                else None
+            ),
         )

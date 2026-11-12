@@ -42,3 +42,23 @@ def test_cells_a_stalled_fill_never_reached_stay_out_of_the_shot():
     tp = solve_two_phase_short_shot(solver, full_shot)
     assert not (tp.injection_mask & unreached).any()
     assert tp.metadata["injection_stalled_cells"] == int(unreached.sum())
+
+
+def test_a_stalled_fill_is_not_shown_as_full():
+    from core.visualizer import fill_frame_fractions, filled_at
+
+    cell = 4.0
+    mask = np.ones((5, 75), dtype=bool)
+    geom = Geometry(
+        mask=mask, thickness_mm=np.full(mask.shape, 1.0), cell_size_mm=cell,
+        gates=[(iy, 0) for iy in range(5)],
+    )  # fmt: skip
+    r = MultilayerHeleShawSolver(
+        geometry=geom, material=MaterialDB()["PMMA"], melt_temperature_K=533.15,
+        mold_temperature_K=333.15, injection_velocity_mms=60.0, injection_volume_flow_cm3s=1.2,
+        num_layers=7, thermal_coupling=True, fill_method="march", thermal_model="energy",
+    ).solve(num_frames=4)  # fmt: skip
+    assert r.unreached_mask.any()
+    assert np.array_equal(r.unfillable_mask, r.unreached_mask)
+    assert not (filled_at(r, np.inf) & r.unreached_mask).any()
+    assert fill_frame_fractions(r, 6)[-1] == 1.0 - r.unreached_mask.mean()

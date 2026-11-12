@@ -412,12 +412,21 @@ def fill_frame_times(result: FlowResult, num_frames: int) -> np.ndarray:
     return np.linspace(t_max / num_frames, t_max, num_frames)
 
 
+def filled_at(result: FlowResult, t: float) -> np.ndarray:
+    """Cells that hold melt at time ``t``. Cells the melt never reaches
+    (``unfillable_mask``: sealed off, or beyond a fill that stalled) never do,
+    whatever their ``fill_time_s`` holds for the maps."""
+    filled = result.fill_time_s <= t
+    dead = getattr(result, "unfillable_mask", None)
+    return filled & ~dead if dead is not None else filled
+
+
 def fill_frame_fractions(result: FlowResult, num_frames: int) -> np.ndarray:
     """Filled area fraction (0..1) of the cavity at each frame time."""
     g = result.geometry
     cells = max(int(g.mask.sum()), 1)
     times = fill_frame_times(result, num_frames)
-    return np.array([float((g.mask & (result.fill_time_s <= t)).sum()) / cells for t in times])
+    return np.array([float((g.mask & filled_at(result, t)).sum()) / cells for t in times])
 
 
 def render_fill_animation(
@@ -488,7 +497,7 @@ def render_fill_animation(
 
     def update(frame_idx):
         t = frames_t[frame_idx]
-        filled = result.fill_time_s <= t
+        filled = filled_at(result, t)
         overlay_im.set_array(_unfilled_overlay(result, filled))
         progress = float(filled[g.mask].sum()) / max(int(g.mask.sum()), 1)
         title_obj.set_text(_fill_title(result, t, progress, long=True))
@@ -1440,7 +1449,7 @@ def export_frames(
     out_paths: list[Path] = []
     try:
         for k, t in enumerate(frames_t):
-            filled = result.fill_time_s <= t
+            filled = filled_at(result, t)
             overlay_im.set_array(_unfilled_overlay(result, filled))
             title_obj.set_text(
                 _fill_title(result, t, filled[g.mask].sum() / max(int(g.mask.sum()), 1))
