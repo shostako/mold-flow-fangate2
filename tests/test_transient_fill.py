@@ -15,7 +15,7 @@ import pytest
 from core.geometry import Geometry
 from core.materials import MaterialDB
 from core.multilayer_solver import MultilayerHeleShawSolver
-from core.transient_fill import march_fill, only_seams
+from core.transient_fill import enclosed_seams, march_fill
 from core.two_phase import solve_two_phase_short_shot
 
 MM3 = 1e-9  # m^3
@@ -441,15 +441,36 @@ def test_a_stall_says_whether_the_limit_slowed_the_melt_first():
     assert frozen.gate_pressure_max_Pa == pytest.approx(1e6)
 
 
-def test_only_seams_tells_a_line_from_a_region():
-    un = np.zeros((8, 8), dtype=bool)
-    assert not only_seams(un)
+def test_enclosed_seams_wants_melt_on_both_sides_of_the_line():
+    cav = np.ones((9, 9), dtype=bool)
+    un = np.zeros((9, 9), dtype=bool)
+    assert not enclosed_seams(un, cav)
     un[2:7, 3] = True
-    un[2:7, 4] = True  # two cells wide
-    un[1, 1] = True
-    assert only_seams(un)
-    un[2:7, 5] = True  # three wide: the middle column has no reached neighbour
-    assert not only_seams(un)
+    un[2:7, 4] = True  # two cells wide, full cells left and right
+    un[7, 5] = un[8, 6] = (
+        True  # a diagonal run of single cells (the last at the wall: up/down fails, left/right holds)
+    )
+    assert enclosed_seams(un, cav)
+    un[2:7, 5] = True  # three wide: the middle column is two cells from any full cell
+    assert not enclosed_seams(un, cav)
+    # the line may end at the wall: its last cell has the wall on one side
+    end = np.zeros((9, 9), dtype=bool)
+    end[4, 1:4] = True
+    end[4:6, 0] = (
+        True  # (5, 0): the wall to its left, an unreached cell above, full below and right
+    )
+    end[6, 0] = True  # two unreached cells above it: only "beside the line, at the wall" holds
+    assert enclosed_seams(end, cav)
+    # a rim one cell wide along the wall, however long: a wall on one side, not a seam
+    rim = np.zeros((9, 9), dtype=bool)
+    rim[0, 2:8] = True
+    assert not enclosed_seams(rim, cav)
+    # a channel one cell wide left unfilled past its mouth: its sides are outside the cavity
+    chan = np.zeros((3, 9), dtype=bool)
+    chan[1, :] = True
+    left = chan.copy()
+    left[1, :3] = False
+    assert not enclosed_seams(left, chan)
 
 
 def test_a_held_back_screw_changes_stage_by_the_volume_it_delivered():

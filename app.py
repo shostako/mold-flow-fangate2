@@ -58,7 +58,7 @@ from core.packing_solve import (
 )
 from core.settings_record import config_settings, settings_json
 from core.solver import WELD_MIN_ANGLE_DEG
-from core.transient_fill import only_seams
+from core.transient_fill import enclosed_seams
 from core.two_phase import solve_two_phase_short_shot
 from core.version import build_label
 from core.visualizer import (
@@ -413,9 +413,10 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- **流れやすさ**: その場所の流量から壁の剪断応力を解き、Cross-WLF の粘度を層ごとに下げて積分する"
         "（代表流動速度は使わない）\n"
         "- **射出圧の上限**: ゲートの圧力が上限に達すると流量が落ちる。流れが止まれば、そこで充填を止める。"
-        "止まった理由は結果の先頭に出す: 上限に達して流量が落ちたのか、上限に達する前に残りへ入る道が固まったのか。"
+        "止まった理由は結果の先頭に出す: 上限に達して流量が落ちたのか、上限で流量が落ちる前に残りへ入る所のマスが中心まで固まったのか"
+        "（どちらとも示せないときは、そう書く）。"
         "先端のマスの流れやすさは、そのマスに入っている樹脂の温度で決める。先に少し入って固まったマスには、"
-        "後から来た樹脂が入れない。先に止まった先端と後から来た先端の合わせ目に、幅 1〜2 マスの線が残ることがあり、"
+        "後から来た樹脂が入れない。先に止まった先端と後から来た先端の合わせ目に、両側に樹脂が届いた幅 1〜2 マスの線が残ることがあり、"
         "これは欠けの予測ではない（ウェルドが弱く出やすい場所の目安として読む）\n"
         "- **保圧へ**: VP 切替の時点の状態をそのまま保圧の計算（§9）へ渡し、保圧中も同じ 3 つの効果を刻みごとに解く\n\n"
         "入っていないもの: 面内（板の広がる向き）の熱伝導、金型の中の温度の分布（金型の表面は一様に金型温度）、"
@@ -1710,9 +1711,11 @@ def _stall_note(md: dict, unreached: np.ndarray | None, geom: Geometry) -> str |
     The march stops either at the injection pressure limit with the rate fallen
     away, or with the way to the last cells frozen shut before the limit ever
     slowed the melt. The second leaves, where a front that stopped and froze
-    meets a later one, a line one or two cells wide: a front cell takes its
-    conductance from the melt already in it, so melt that arrives later cannot
-    enter. That line is how the model is built, not a short shot.
+    meets a later one, a line one or two cells wide with melt on both sides: a
+    front cell takes its conductance from the melt already in it, so melt that
+    arrives later cannot enter. That line is how the model is built, not a short
+    shot. A rim or a region left unfilled stays a short shot, and a stall the
+    record cannot attribute is reported as such.
     """
     if not md.get("march_stalled") or unreached is None:
         return None
@@ -1726,24 +1729,27 @@ def _stall_note(md: dict, unreached: np.ndarray | None, geom: Geometry) -> str |
         f"届かなかった所は {n_cells} マス・{vol_cm3:.2f} cm³。"
     )
     limit = md.get("injection_pressure_limit_MPa")
-    if md.get("march_stall_cause") != "frozen_path":
+    at_limit = f"射出圧の上限（{limit:g} MPa）" if limit is not None else "射出圧の上限"
+    cause = md.get("march_stall_cause")
+    if cause == "undetermined":
         return head + (
-            f"ゲートの圧力が射出圧の上限（{limit:g} MPa）に達して流量が落ち、流れが止まった。"
-            if limit is not None
-            else "ゲートの圧力が射出圧の上限に達して流量が落ち、流れが止まった。"
+            f"ゲートの圧力が{at_limit}に達したところで、流量がほぼ 0 になった。"
+            "上限が足りないのか、残りへ入る道が固まったのかは、この計算の記録からは分けられない。"
         )
+    if cause != "frozen_path":
+        return head + f"ゲートの圧力が{at_limit}に達して流量が落ち、流れが止まった。"
     p_free = float(md.get("march_gate_pressure_free_max_MPa", 0.0))
     why = (
-        f"射出圧の上限（{limit:g} MPa）が理由ではない（止まる前のゲートの圧力は最大 {p_free:.0f} MPa）。"
-        "残りへ入る道が固まった。"
+        f"{at_limit}が理由ではない（止まる前のゲートの圧力は最大 {p_free:.0f} MPa）。"
+        "残りへ入る所のマスが、中心まで固まっている。"
     )
-    if not only_seams(un):
-        return head + why + "面で残っているので、そこは樹脂が届く前に道が固まる（ショート）と読む。"
+    if not enclosed_seams(un, geom.mask):
+        return head + why + "樹脂が届く前に道が固まった所（ショート）と読む。"
     return (
         head
         + why
         + (
-            "残りは幅 1〜2 マスの線で、先に止まって固まった先端と、後から来た先端の合わせ目にあたる。"
+            "残りは幅 1〜2 マスの線で、線の両側には樹脂が届いている。先に止まって固まった先端と、後から来た先端の合わせ目にあたる。"
             "先端のマスの流れやすさを、そのマスに先に入って固まった樹脂で決める作りのために残るもので、"
             "欠けの予測ではない。固まった先端に後から樹脂が当たる所なので、ウェルドが弱く出やすい場所の目安として読む。"
         )

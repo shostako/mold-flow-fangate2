@@ -83,8 +83,8 @@ class MarchFillResult:
     gate_pressure_free_max_Pa: float = 0.0
     #: steps at the limit that still delivered more than the stall fraction of the
     #: programmed rate. A stalled march with none of these never ran slowed at the
-    #: limit: the way to the cells left closed outright (it froze), and no machine
-    #: pressure would have opened it.
+    #: limit: either the way to the cells left closed outright, or the limit passed
+    #: next to nothing from its first step (the rate history cannot tell which).
     pressure_slowed_steps: int = 0
 
 
@@ -452,18 +452,38 @@ def march_fill(
     )
 
 
-def only_seams(unreached: np.ndarray) -> bool:
-    """Whether the cells a stalled march left are lines at most two cells wide.
+def enclosed_seams(unreached: np.ndarray, cavity: np.ndarray) -> bool:
+    """Whether the cells a stalled march left are lines with melt on both sides.
 
-    True when every one of them has a 4-neighbour that is not one of them. A
-    front that stopped and froze, met later by another, leaves such a line (a
-    front cell takes its conductance from the melt already in it); a region the
-    melt could not reach has cells with all four neighbours unreached.
+    True when every one of them has, along ``x`` or along ``y``, a full cavity
+    cell on each side, next to it or one unreached cell away (a line at most
+    two cells wide) -- or lies against the cavity wall next to one that has: the
+    end of such a line, where it runs into the wall. A front that stopped and froze, met later by
+    another, leaves such a line. A rim or a channel the melt did not fill has a
+    wall on one side all along, and a region has cells with no full cell that
+    near: both are a short shot, whatever their width.
     """
     un = np.asarray(unreached, dtype=bool)
-    pad = np.pad(un, 1)
-    inner = pad[1:-1, 1:-1] & pad[:-2, 1:-1] & pad[2:, 1:-1] & pad[1:-1, :-2] & pad[1:-1, 2:]
-    return bool(un.any() and not inner.any())
+    if not un.any():
+        return False
+    full = np.asarray(cavity, dtype=bool) & ~un
+    ny, nx = un.shape
+    f = np.pad(full, 2)
+    u = np.pad(un, 2)
+
+    def side(dy: int, dx: int) -> np.ndarray:
+        def at(arr, k):
+            return arr[2 + k * dy : 2 + k * dy + ny, 2 + k * dx : 2 + k * dx + nx]
+
+        return at(f, 1) | (at(u, 1) & at(f, 2))
+
+    both = un & ((side(0, -1) & side(0, 1)) | (side(-1, 0) & side(1, 0)))
+    # the end of a line at the wall: beside a cell of the line, and against the wall
+    b = np.pad(both, 1)
+    beside = b[:-2, 1:-1] | b[2:, 1:-1] | b[1:-1, :-2] | b[1:-1, 2:]
+    c = np.pad(np.asarray(cavity, dtype=bool), 1)
+    at_wall = ~(c[:-2, 1:-1] & c[2:, 1:-1] & c[1:-1, :-2] & c[1:-1, 2:])
+    return bool(np.all((both | (beside & at_wall))[un]))
 
 
 def _next_step(C, V, m, fa, fb, fr, newly, inflow, cfl, dt_max_s, rate) -> float:
