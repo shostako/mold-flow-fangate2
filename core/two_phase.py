@@ -427,7 +427,12 @@ def solve_two_phase_short_shot(
     omega2 = omega1.copy()
     tau2: np.ndarray | None = None
     compression_progress = np.full(geom.shape, np.nan)
-    final_complete = V_shot_mm3 >= V_fin_reach * (1.0 - _REL_EPS)
+    # A stalled injection delivered what its pool holds, whatever was metered:
+    # the rest of the shot never left the barrel, and cannot fill anything later.
+    V_delivered_mm3 = V_shot_mm3
+    if skin_meta.get("injection_stalled_cells"):
+        V_delivered_mm3 = min(V_shot_mm3, float(vol_open[omega1].sum()))
+    final_complete = V_delivered_mm3 >= V_fin_reach * (1.0 - _REL_EPS)
     # Phase 2 models the mold closing. When the gap does not actually close
     # anywhere (no ICM, stroke 0, factor 1) there is no squeeze to advance
     # the front — but the atomic phase-1 cutoff can still leave a residual
@@ -458,7 +463,7 @@ def solve_two_phase_short_shot(
         # h_open >= h_fin everywhere, so V_open_total >= V_fin_total and a
         # complete injection would have implied a complete final fill —
         # reaching this branch means omega1 is a strict subset of the cavity.
-        budget = V_shot_mm3 - float(vol_fin[omega1].sum())
+        budget = V_delivered_mm3 - float(vol_fin[omega1].sum())
         if budget > 0 and candidates.any():
             S2 = solver2._conductance_field(eta, h_fin)
             tau2, _ = solver2._solve_tau_field(S2, pool_open)

@@ -42,6 +42,8 @@ def test_cells_a_stalled_fill_never_reached_stay_out_of_the_shot():
     tp = solve_two_phase_short_shot(solver, full_shot)
     assert not (tp.injection_mask & unreached).any()
     assert tp.metadata["injection_stalled_cells"] == int(unreached.sum())
+    # no compression: what the injection left empty stays empty in the final state
+    assert np.array_equal(tp.final_mask, tp.injection_mask)
 
 
 def test_a_stalled_fill_is_not_shown_as_full():
