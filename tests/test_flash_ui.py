@@ -40,9 +40,9 @@ def test_flash_pane_reads_the_holding_solve_and_says_what_the_series_model_hides
     assert info["machine_clamp_kN"] == 1000.0
     assert info["clamp_peak_kN"] > 0.0
     # the runner next to the gate holds about the holding pressure
-    assert info["runner_spots"] and info["runner_spots"][0]["溶けている間の最大圧力 [MPa]"] > 50.0
+    assert info["runner_spots"] and info["runner_spots"][0]["最大圧力 [MPa]"] > 50.0
     assert SERIES_NOTE in texts(at)
-    tables = [df for df in at.dataframe if "溶けている間の最大圧力 [MPa]" in df.value.columns]
+    tables = [df for df in at.dataframe if "最大圧力 [MPa]" in df.value.columns]
     assert len(tables) == 2
     with zipfile.ZipFile(io.BytesIO(at.session_state["mfs_zip_bytes"])) as zf:
         assert "flash_risk.png" in zf.namelist()
@@ -62,7 +62,7 @@ def test_layered_temperature_goes_from_the_fill_to_the_holding_solve():
     assert flash["thermal"] == "layers"
     # with the temperature carried, the thin rim is still molten at the switch
     assert flash["product_spots"]
-    assert flash["product_spots"][0]["溶けている間の最大圧力 [MPa]"] > 5.0
+    assert flash["product_spots"][0]["最大圧力 [MPa]"] > 5.0
     shown = texts(at)
     assert SERIES_NOTE not in shown and THIN_NOTE not in shown
     with zipfile.ZipFile(io.BytesIO(at.session_state["mfs_zip_bytes"])) as zf:
