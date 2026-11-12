@@ -510,3 +510,18 @@ def test_layered_packing_puts_the_flow_s_heat_into_the_melt():
     # the warmer melt is lighter: a little less mass goes in, a little more shrinks
     assert hot.added_mass_fraction < cold.added_mass_fraction
     assert np.nanmean(hot.shrinkage) > np.nanmean(cold.shrinkage)
+
+
+def test_a_hot_state_is_cooled_to_the_end_whatever_the_melt_s_age_says():
+    # arrival times say the plate is long solid; the state handed over says it
+    # is all melt. With no holding time the march must still run until the
+    # carried centres have solidified, not stop at the slab estimate's 1 ms.
+    mask, thk, t_arr, gates = _plate(3.0, 60.0, ny=4, nx=12)
+    hot = np.ones((*mask.shape, 16))
+    r = _solve(mask, thk, t_arr, gates, 0.0, 0.0, thermal="layers", initial_theta=hot)
+    from core.packing import freeze_age_s
+
+    t_solid = float(freeze_age_s(np.array([3.0]), ALPHA, 0.3)[0])
+    assert r.times_s[-1] >= 0.95 * t_solid
+    # sealed and cooling from all melt at 1 MPa: it ends at no pressure
+    assert np.nanmax(r.freeze_pressure_Pa) < 0.2e6

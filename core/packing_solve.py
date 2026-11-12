@@ -470,9 +470,16 @@ def solve_packing(
     # With the layered state the flow can keep a centre molten past the slab's
     # own time: an end the caller did not set is put off while one still is.
     open_end = end_time_s is None and layered
+    # how long a slab of the cell's thickness takes from all melt: the carried
+    # state is no hotter than that, and the slab's own estimate (t_freeze, by
+    # the melt's age) says nothing about a state handed over from the fill
+    fresh_freeze = float(np.max(freeze_age_s(thk[mask], alpha, solid_fraction)))
     if end_time_s is None:
-        end_time_s = max(float(hold_time_s), float(np.max(t_freeze))) * 1.02 + 1e-3
-    end_limit = 3.0 * end_time_s
+        longest = fresh_freeze if layered else float(np.max(t_freeze))
+        end_time_s = max(float(hold_time_s), longest) * 1.02 + 1e-3
+    # the flow can hold a centre molten while the gate is open; once it has
+    # closed, nothing stays molten longer than a fresh slab
+    end_limit = max(3.0 * end_time_s, float(hold_time_s) + 3.0 * fresh_freeze)
 
     if dt_max_s is None:
         dt_max_s = max(end_time_s / 60.0, 0.1)
