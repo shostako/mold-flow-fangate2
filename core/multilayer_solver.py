@@ -108,6 +108,9 @@ class MultilayerFlowResult(FlowResult):
     thermal_theta_end: np.ndarray | None = None  # (ny, nx, n_z) at the end of the fill
     #: fill fraction → (time [s], θ (ny, nx, n_z)): the state when that share was delivered
     thermal_snapshots: dict | None = None
+    #: march: cavity cells the melt never reached (the fill stalled first). Their
+    #: ``fill_time_s`` holds the time it stalled, so the maps have a value there.
+    unreached_mask: np.ndarray | None = None
 
 
 def _uniform_layer_zeta(num_layers: int) -> np.ndarray:
@@ -1232,4 +1235,5 @@ class MultilayerHeleShawSolver:
             layer_brinkman_number=layer_Brinkman,
             thermal_theta_end=st.get("thermal_theta_end"),
             thermal_snapshots=st.get("thermal_snapshots"),
+            unreached_mask=st.get("march_unreached"),
         )

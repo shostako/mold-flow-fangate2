@@ -498,3 +498,15 @@ def test_coarse_solve_takes_the_layered_state_down_to_its_blocks():
     assert coarse.cell_size_mm == 2.0
     assert coarse.shrinkage[mask].mean() == pytest.approx(fine.shrinkage[mask].mean(), abs=1.5e-3)
     assert coarse.molten_peak_pressure_Pa.shape == mask.shape
+
+
+def test_layered_packing_puts_the_flow_s_heat_into_the_melt():
+    # a thin channel packed from half full at the machine rate: the flow's work
+    # warms the melt it passes through
+    mask, thk, t_arr, gates, rate = _channel(nx=30, ny=3, h_mm=1.5, t_end=1.0)
+    kw = {"thermal": "layers", "switch_fill_fraction": 0.5, "max_inflow_m3_s": rate}
+    hot = _solve(mask, thk, t_arr, gates, 80e6, 1.0, **kw)
+    cold = _solve(mask, thk, t_arr, gates, 80e6, 1.0, shear_heating_enabled=False, **kw)
+    # the warmer melt is lighter: a little less mass goes in, a little more shrinks
+    assert hot.added_mass_fraction < cold.added_mass_fraction
+    assert np.nanmean(hot.shrinkage) > np.nanmean(cold.shrinkage)

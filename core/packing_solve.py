@@ -76,7 +76,7 @@ from scipy.ndimage import label as ndi_label
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import splu
 
-from .layer_heat import carry, conduct, flow_shares, layer_grid
+from .layer_heat import carry, conduct, flow_shares, layer_grid, shear_heating
 from .materials import Material
 from .packing import freeze_age_s
 
@@ -249,6 +249,7 @@ def solve_packing(
     max_inflow_m3_s: float | None = None,
     thermal: str = "series",
     initial_theta: np.ndarray | None = None,
+    shear_heating_enabled: bool = True,
     progress: Callable[[float, float], None] | None = None,
 ) -> PackingSolve:
     """March from the V/P switch-over until nothing flows.
@@ -269,6 +270,8 @@ def solve_packing(
     through the gate is at the melt temperature. ``initial_theta``
     ``(ny, nx, n_z)`` is that state at the switch (from a fill that carried
     it); without it the state starts from the slab series at the arrival time.
+    With ``"layers"`` the heat the flow dissipates goes into the state
+    (``shear_heating_enabled``; the pressure's work on each face).
     ``progress(t, end_time)`` is called after every time step.
     ``end_time_s`` defaults to the later of the holding time and the moment
     the last cell's centre solidifies. The pressure field is kept at every
@@ -329,6 +332,7 @@ def solve_packing(
         raise ValueError("a switch before the cavity is full needs max_inflow_m3_s")
     t_arr = np.minimum(t_arr, t_switch)
     dT_melt = float(T_melt_K) - float(T_mold_K)
+    heat_capacity = float(material.density_melt_kgm3) * float(material.specific_heat_J_kgK)
 
     # faces between neighbouring cavity cells: (+x) and (+y)
     fx_i, fx_j = index[:, :-1].ravel(), index[:, 1:].ravel()
@@ -452,7 +456,14 @@ def solve_packing(
         d_face = np.where(both, 2.0 * (r_j**2 * d_i + r_i**2 * d_j), 0.0)
         share = np.where(grad > 0.0, (along / np.where(grad > 0.0, grad, 1.0)) ** 2, 1.0)
         rho_f = 0.5 * (rho[f_i] + rho[f_j])
-        return rho_f * s_face, rho_f * (s_face + d_face * share), du, slope_phi, np.hypot(gx, gy)
+        return (
+            rho_f * s_face,
+            rho_f * (s_face + d_face * share),
+            du,
+            slope_phi,
+            np.hypot(gx, gy),
+            np.where(both, r_i, 0.0),
+        )
 
     v_room = float(pvt.specific_volume(T_room_K, 0.0))
     t_freeze = freeze_age_s(thk[mask], alpha, solid_fraction) - t_arr  # after the switch
@@ -529,7 +540,7 @@ def solve_packing(
             rho, slope = mean_density(iso, np.maximum(u_it, 0.0))
             m_fun = np.where(on, rho * vol, full_mass + soft * u_it)
             dm = np.where(on, slope * vol, soft)
-            g_face, k_face, dp, slope_phi, _ = face_flow(weight, rho, u_it)
+            g_face, k_face, dp, slope_phi, _, _ = face_flow(weight, rho, u_it)
             flow = g_face * dp  # mass rate i ← j
             net = np.bincount(f_i, flow, minlength=n) - np.bincount(f_j, flow, minlength=n)
             res = m_fun - mass_old - dt * net
@@ -579,7 +590,7 @@ def solve_packing(
         theta_new = None
         from_gate = np.zeros(n)
         if gate_open or layered:
-            g_face, _, dp, _, grad = face_flow(weight, rho, u_it)
+            g_face, _, dp, _, grad, r_i = face_flow(weight, rho, u_it)
             flow = g_face * dp
         if gate_open:
             net = np.bincount(f_i, flow, minlength=n) - np.bincount(f_j, flow, minlength=n)
@@ -614,6 +625,17 @@ def solve_packing(
                 grid,
                 source=np.maximum(from_gate, 0.0),
             )
+            # the heat the flow dissipated: S_f·Δφ² per face (the pressure's work),
+            # shared between the two cells as resistances in series (core.layer_heat)
+            heat_face = (g_face / np.maximum(0.5 * (rho[f_i] + rho[f_j]), 1e-12)) * dp**2 * dt
+            heat = np.bincount(f_i, heat_face * (1.0 - r_i), minlength=n) + np.bincount(
+                f_j, heat_face * r_i, minlength=n
+            )
+            heat = np.where(mass_new > 0.0, heat, 0.0)
+            if shear_heating_enabled and np.any(heat > 0.0):
+                theta_new = theta_new + shear_heating(
+                    heat, inv_eta, vol, heat_capacity, dT_melt, grid
+                )
         return u_it, mass_new, inflow, converged, used, theta_new
 
     # The machine cannot deliver melt faster than ``max_inflow_m3_s``: while

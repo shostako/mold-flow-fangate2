@@ -2035,40 +2035,75 @@ if do_run:
                 / max(float(result.total_fill_time_s), 1e-9)
             )
             # 充填で温度を刻みごとに解いたときは、VP 切替の時点の温度を保圧へ渡す
-            _snaps = getattr(result, "thermal_snapshots", None) or {}
+            _arrival = np.asarray(result.fill_time_s, dtype=float)
             _vp = float(hold_vp_pct) / 100.0
-            _theta0 = _snaps.get(_vp)
-            if _theta0 is None and _vp >= 1.0:
-                _theta0 = (None, getattr(result, "thermal_theta_end", None))
-            _hold_thermal = (
-                {"thermal": "layers", "initial_theta": _theta0[1]}
-                if _theta0 is not None and _theta0[1] is not None
-                else {}
-            )
-            _hold = None
-            try:
-                with st.spinner("保圧を解いている…"):
-                    _hold = solve_packing_coarsened(
-                        geom.mask,
-                        geom.thickness_mm,
-                        result.fill_time_s,
-                        geom.gates,
-                        geom.cell_size_mm,
-                        mat,
-                        melt_C + 273.15,
-                        mold_C + 273.15,
-                        float(hold_p_mpa) * 1e6,
-                        float(hold_t_s),
-                        solid_fraction=float(solid_fraction),
-                        factor=_hold_factor,
-                        switch_fill_fraction=float(hold_vp_pct) / 100.0,
-                        max_inflow_m3_s=_hold_rate,
-                        **_hold_thermal,
+            _hold_thermal: dict = {}
+            _hold_note: str | None = None
+            _hold_blocked: str | None = None
+            if energy_on:
+                _md = result.metadata
+                _snaps = getattr(result, "thermal_snapshots", None) or {}
+                _unreached = getattr(result, "unreached_mask", None)
+                _stalled = bool(_md.get("march_stalled", False))
+                _delivered = float(_md.get("march_volume_fraction", 1.0))
+                _theta = None
+                if _vp in _snaps and not (_stalled and _vp >= _delivered):
+                    _theta = _snaps[_vp][1]
+                elif _stalled and _unreached is not None and np.any(_unreached & geom.mask):
+                    # 充填が VP 切替より前で止まった: 止まった時点で切り替え、届かなかった
+                    # マスは空として保圧で埋めにいく（到達時刻を充填の終わりの後ろへ送る）
+                    _theta = getattr(result, "thermal_theta_end", None)
+                    _cell_v = geom.thickness_mm * geom.cell_size_mm**2
+                    _reached_v = float(_cell_v[geom.mask & ~_unreached].sum())
+                    _vp = _reached_v / float(_cell_v[geom.mask].sum()) * (1.0 - 1e-9)
+                    _arrival = np.where(_unreached, np.nanmax(_arrival[geom.mask]) + 1.0, _arrival)
+                    _hold_note = (
+                        f"充填が体積の {100.0 * _delivered:.2f} % で止まった（射出圧の上限か、流れの道が"
+                        "固まった）ので、VP 切替の設定より前のその時点で保圧に切り替えた。届かなかった所は空として、保圧で埋めにいく。"
                     )
-            except (ValueError, RuntimeError) as e:
-                # 充填の結果は済んでいる。保圧だけ理由を残して飛ばす
-                _hold_skip = f"保圧の計算を完了できませんでした: {e}"
+                elif _vp >= 1.0:
+                    _theta = getattr(result, "thermal_theta_end", None)
+                if _theta is None:
+                    _hold_blocked = (
+                        "充填の VP 切替の時点の温度が残っていないので、保圧を解けませんでした"
+                        "（解き直すと出ます）。"
+                    )
+                else:
+                    _hold_thermal = {
+                        "thermal": "layers",
+                        "initial_theta": _theta,
+                        "shear_heating_enabled": bool(shear_heating_enabled),
+                    }
+            _hold = None
+            if _hold_blocked is not None:
+                _hold_skip = _hold_blocked
                 st.warning(_hold_skip)
+            else:
+                if _hold_note is not None:
+                    st.info(_hold_note)
+                try:
+                    with st.spinner("保圧を解いている…"):
+                        _hold = solve_packing_coarsened(
+                            geom.mask,
+                            geom.thickness_mm,
+                            _arrival,
+                            geom.gates,
+                            geom.cell_size_mm,
+                            mat,
+                            melt_C + 273.15,
+                            mold_C + 273.15,
+                            float(hold_p_mpa) * 1e6,
+                            float(hold_t_s),
+                            solid_fraction=float(solid_fraction),
+                            factor=_hold_factor,
+                            switch_fill_fraction=_vp,
+                            max_inflow_m3_s=_hold_rate,
+                            **_hold_thermal,
+                        )
+                except (ValueError, RuntimeError) as e:
+                    # 充填の結果は済んでいる。保圧だけ理由を残して飛ばす
+                    _hold_skip = f"保圧の計算を完了できませんでした: {e}"
+                    st.warning(_hold_skip)
             if _hold is not None:
                 _hold_region = (
                     geom.mask if geom.product_mask is None else geom.mask & geom.product_mask
@@ -2088,7 +2123,8 @@ if do_run:
                 _hold_info = {
                     "pressure_MPa": float(hold_p_mpa),
                     "time_s": float(hold_t_s),
-                    "vp_switch_fill_percent": float(hold_vp_pct),
+                    "vp_switch_fill_percent": round(100.0 * _vp, 6),
+                    "vp_switch_note": _hold_note,
                     "vp_switch_time_s": float(_hold.switch_time_s),
                     "unfilled_volume_percent": 100.0 * _hold.unfilled_volume_fraction,
                     "max_inflow_cm3_s": _hold_rate * 1e6,
@@ -2526,6 +2562,8 @@ if "mfs_result" in st.session_state:
                 )
                 _hc3.metric("解いた格子", f"{_hi['grid_mm']:g} mm")
                 _hold_late_shown = st.session_state.get("mfs_hold_late_path")
+                if _hi.get("vp_switch_note"):
+                    st.info(_hi["vp_switch_note"])
                 if _hi["vp_switch_fill_percent"] < 100.0 and _hold_late_shown is not None:
                     st.image(str(_hold_late_shown))
                     st.caption(

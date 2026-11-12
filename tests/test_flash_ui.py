@@ -7,6 +7,8 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts
 
@@ -81,3 +83,29 @@ def test_the_temperature_choice_needs_the_marching_fill():
     assert not at.radio(key="thermal_model").disabled
     at.radio(key="thermal_model").set_value("energy").run()
     assert not at.number_input(key="inj_p_limit_mpa").disabled
+
+
+def test_a_fill_that_stalls_before_the_switch_hands_over_where_it_stopped():
+    # (the fill's stall is checked first: if this mesh ever fills it all, the test says so)
+    at = _app()
+    at.radio(key="wall_model").set_value("multilayer")
+    at.checkbox(key="two_phase_on").set_value(False)
+    at.checkbox(key="icm_on").set_value(False)
+    at.checkbox(key="hold_on").set_value(True).run()
+    at.radio(key="fill_method").set_value("march").run()
+    at.radio(key="thermal_model").set_value("energy").run()
+    at.number_input(key="inj_p_limit_mpa").set_value(20.0)
+    # switching at 100 %: the fill stops short of it (on the 4 mm grid a few
+    # cells of the thin rim are never reached), so the switch comes where it stopped
+    at.number_input(key="hold_vp_pct").set_value(100.0).run()
+    at.button[0].click().run()
+    assert not at.exception
+    md = at.session_state["mfs_result"].metadata
+    assert md["march_stalled"] and md["march_volume_fraction"] < 1.0
+    hold = at.session_state["mfs_hold_info"]
+    assert hold["thermal"] == "layers"
+    assert hold["vp_switch_note"] and "で止まった" in hold["vp_switch_note"]
+    assert hold["vp_switch_fill_percent"] == pytest.approx(
+        100.0 * md["march_volume_fraction"], abs=0.5
+    )
+    assert "で止まった" in texts(at)
