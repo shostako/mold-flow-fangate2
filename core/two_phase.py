@@ -372,10 +372,12 @@ def solve_two_phase_short_shot(
         take = _prefix_by_volume(tau1[sel], vol_open[sel], V_shot_mm3)
         omega1[sel] = take
 
-    if skin_meta.get("injection_stalled_cells") and fp is not None:
-        # a stalled march: its own clock is the record of what happened. The
-        # volume map would stretch the cells it reached over the nominal time
-        # of the whole cavity; the injection ends when its last cell was filled.
+    if fp is not None and (
+        skin_meta.get("injection_stalled_cells") or fp.get("march_pressure_limited_steps")
+    ):
+        # a march the pressure limit held back (stalled or not): its own clock is
+        # the record of what happened. The volume map would put the cells on the
+        # programme's nominal times; the injection ends when its last cell filled.
         t_arr1 = np.where(reachable, np.asarray(fp["t_arr"], dtype=float), np.nan)
         if omega1.any():
             T_inj = float(np.nanmax(t_arr1[omega1]))

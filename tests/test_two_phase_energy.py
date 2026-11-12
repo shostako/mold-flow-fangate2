@@ -68,3 +68,25 @@ def test_a_stalled_fill_is_not_shown_as_full():
     assert np.array_equal(r.unfillable_mask, r.unreached_mask)
     assert not (filled_at(r, np.inf) & r.unreached_mask).any()
     assert fill_frame_fractions(r, 6)[-1] == 1.0 - r.unreached_mask.mean()
+
+
+def test_a_pressure_limited_fill_that_completes_keeps_the_march_s_clock():
+    cell = 4.0
+    mask = np.ones((5, 30), dtype=bool)
+    geom = Geometry(
+        mask=mask, thickness_mm=np.full(mask.shape, 2.0), cell_size_mm=cell,
+        gates=[(iy, 0) for iy in range(5)],
+    )  # fmt: skip
+    solver = MultilayerHeleShawSolver(
+        geometry=geom, material=MaterialDB()["PMMA"], melt_temperature_K=533.15,
+        mold_temperature_K=333.15, injection_velocity_mms=60.0, injection_volume_flow_cm3s=2.4,
+        num_layers=7, thermal_coupling=True, fill_method="march", thermal_model="energy",
+        injection_pressure_limit_Pa=20e6,
+    )  # fmt: skip
+    main = solver.solve(num_frames=4)
+    md = main.metadata
+    assert md["march_pressure_limited_steps"] > 0 and not md["march_stalled"]
+    nominal = float(mask.sum()) * cell * cell * 2.0 / 1000.0 / 2.4  # V / Q
+    assert main.total_fill_time_s > nominal * (1 + 1e-4)  # the limit slowed it
+    tp = solve_two_phase_short_shot(solver, float(mask.sum()) * cell * cell * 2.0 / 1000.0)
+    assert tp.injection_time_s == main.total_fill_time_s
