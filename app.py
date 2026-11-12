@@ -58,6 +58,7 @@ from core.packing_solve import (
 )
 from core.settings_record import config_settings, settings_json
 from core.solver import WELD_MIN_ANGLE_DEG
+from core.transient_fill import enclosed_seams
 from core.two_phase import solve_two_phase_short_shot
 from core.version import build_label
 from core.visualizer import (
@@ -411,7 +412,12 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "（ゲート圧 × 送った体積）と一致する\n"
         "- **流れやすさ**: その場所の流量から壁の剪断応力を解き、Cross-WLF の粘度を層ごとに下げて積分する"
         "（代表流動速度は使わない）\n"
-        "- **射出圧の上限**: ゲートの圧力が上限に達すると流量が落ちる。流れが止まればショートとして止める\n"
+        "- **射出圧の上限**: ゲートの圧力が上限に達すると流量が落ちる。流れが止まれば、そこで充填を止める。"
+        "止まった理由は結果の先頭に出す: 上限に達して流量が落ちたのか、上限で流量が落ちる前に残りへ入る所のマスが中心まで固まったのか"
+        "（どちらとも示せないときは、そう書く）。"
+        "先端のマスの流れやすさは、そのマスに入っている樹脂の温度で決める。先に少し入って固まったマスには、"
+        "後から来た樹脂が入れない。先に止まった先端と後から来た先端の合わせ目に、両側に樹脂が届いた幅 1〜2 マスの線が残ることがあり、"
+        "これは欠けの予測ではない（ウェルドが弱く出やすい場所の目安として読む）\n"
         "- **保圧へ**: VP 切替の時点の状態をそのまま保圧の計算（§9）へ渡し、保圧中も同じ 3 つの効果を刻みごとに解く\n\n"
         "入っていないもの: 面内（板の広がる向き）の熱伝導、金型の中の温度の分布（金型の表面は一様に金型温度）、"
         "射出圧縮成形との組み合わせ（射出圧縮 ON では到達時刻から読む方で解く）。"
@@ -1279,7 +1285,7 @@ with st.sidebar:
                     "冷えてきたものとして扱う。1 mm の額縁のような薄い所を冷たく見すぎる。\n"
                     "刻みごとに解く方は、厚さ方向 16 層の温度を毎刻み解く（壁への熱伝導、流れが運ぶ熱、剪断発熱）。"
                     "流れやすさはその場所の流量から決める。保圧を解くときは、VP 切替の時点の温度をそのまま保圧へ渡す。"
-                    "射出圧が下の上限に達すると流量が落ち、流れが止まればショートとして止める。"
+                    "射出圧が下の上限に達すると流量が落ち、流れが止まればそこで充填を止める（理由は結果の先頭に出る）。"
                     "面内（板の広がる向き）の熱の伝わりは入っていない。格子は 2 mm 以下で使う"
                     "（4 mm は軸に対して左右対称に切れず、結果が左右で違って出る）。"
                 ),
@@ -1697,6 +1703,57 @@ with st.sidebar:
 
 
 # ----------------------- main panel -----------------------
+
+
+def _stall_note(md: dict, unreached: np.ndarray | None, geom: Geometry) -> str | None:
+    """Say why a fill that carries the temperature stopped short, and what is left.
+
+    The march stops either at the injection pressure limit with the rate fallen
+    away, or with the way to the last cells frozen shut before the limit ever
+    slowed the melt. The second leaves, where a front that stopped and froze
+    meets a later one, a line one or two cells wide with melt on both sides: a
+    front cell takes its conductance from the melt already in it, so melt that
+    arrives later cannot enter. That line is how the model is built, not a short
+    shot. A rim or a region left unfilled stays a short shot, and a stall the
+    record cannot attribute is reported as such.
+    """
+    if not md.get("march_stalled") or unreached is None:
+        return None
+    un = np.asarray(unreached, dtype=bool) & geom.mask
+    if not un.any():
+        return None
+    n_cells = int(un.sum())
+    vol_cm3 = float(geom.thickness_mm[un].sum()) * geom.cell_size_mm**2 / 1000.0
+    head = (
+        f"充填は体積の {100.0 * float(md.get('march_volume_fraction', 1.0)):.2f} % で止まった。"
+        f"届かなかった所は {n_cells} マス・{vol_cm3:.2f} cm³。"
+    )
+    limit = md.get("injection_pressure_limit_MPa")
+    at_limit = f"射出圧の上限（{limit:g} MPa）" if limit is not None else "射出圧の上限"
+    cause = md.get("march_stall_cause")
+    if cause == "undetermined":
+        return head + (
+            f"ゲートの圧力が{at_limit}に達したところで、流量がほぼ 0 になった。"
+            "上限が足りないのか、残りへ入る道が固まったのかは、この計算の記録からは分けられない。"
+        )
+    if cause != "frozen_path":
+        return head + f"ゲートの圧力が{at_limit}に達して流量が落ち、流れが止まった。"
+    p_free = float(md.get("march_gate_pressure_free_max_MPa", 0.0))
+    why = (
+        f"{at_limit}が理由ではない（止まる前のゲートの圧力は最大 {p_free:.0f} MPa）。"
+        "残りへ入る所のマスが、中心まで固まっている。"
+    )
+    if not enclosed_seams(un, geom.mask):
+        return head + why + "樹脂が届く前に道が固まった所（ショート）と読む。"
+    return (
+        head
+        + why
+        + (
+            "残りは幅 1〜2 マスの線で、線の両側には樹脂が届いている。先に止まって固まった先端と、後から来た先端の合わせ目にあたる。"
+            "先端のマスの流れやすさを、そのマスに先に入って固まった樹脂で決める作りのために残るもので、"
+            "欠けの予測ではない。固まった先端に後から樹脂が当たる所なので、ウェルドが弱く出やすい場所の目安として読む。"
+        )
+    )
 
 
 def _fixed_point_warning(
@@ -2162,8 +2219,8 @@ if do_run:
                     _vp = _reached_v / float(_cell_v[geom.mask].sum()) * (1.0 - 1e-9)
                     _arrival = np.where(_unreached, np.nanmax(_arrival[geom.mask]) + 1.0, _arrival)
                     _hold_note = (
-                        f"充填が体積の {100.0 * _delivered:.2f} % で止まった（射出圧の上限か、流れの道が"
-                        "固まった）ので、VP 切替の設定より前のその時点で保圧に切り替えた。届かなかった所は空として、保圧で埋めにいく。"
+                        f"充填が体積の {100.0 * _delivered:.2f} % で止まったので、VP 切替の設定より前の"
+                        "その時点で保圧に切り替えた。届かなかった所は空として、保圧で埋めにいく。"
                     )
                 elif _vp >= 1.0:
                     _theta = getattr(result, "thermal_theta_end", None)
@@ -2536,6 +2593,9 @@ if "mfs_result" in st.session_state:
             advice="反復上限を上げて再実行を。",
             no_flow_key=None,
         )
+        _stall_msg = _stall_note(result.metadata, getattr(result, "unreached_mask", None), geom)
+        if _stall_msg is not None:
+            st.info(_stall_msg)
         if result.metadata.get("domain_converged") is False:
             st.warning(
                 "封止で切れたセルを外す領域の絞り込み（二分探索）が上限回数で打ち切られた。"
@@ -3009,6 +3069,11 @@ if "mfs_result" in st.session_state:
                 if layer_short_shot_path is not None:
                     st.markdown(
                         "**ショートショット予測** — 中央層温度が T_solid を切ったセルを赤マーク"
+                        + (
+                            "。充填が止まって届かなかったマスも赤（理由は結果の先頭）"
+                            if result.metadata.get("march_stalled")
+                            else ""
+                        )
                     )
                     st.image(str(layer_short_shot_path))
                     _download(

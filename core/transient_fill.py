@@ -78,6 +78,14 @@ class MarchFillResult:
     stalled: bool = False  # stopped at the pressure limit with the rate fallen away
     pressure_limited_steps: int = 0  # steps the gate spent at the pressure limit
     gate_pressure_max_Pa: float = 0.0  # highest gate pressure the injection needed
+    #: highest gate pressure of the steps the limit did not hold back: what the
+    #: fill needed before it met the limit
+    gate_pressure_free_max_Pa: float = 0.0
+    #: steps at the limit that still delivered more than the stall fraction of the
+    #: programmed rate. A stalled march with none of these never ran slowed at the
+    #: limit: either the way to the cells left closed outright, or the limit passed
+    #: next to nothing from its first step (the rate history cannot tell which).
+    pressure_slowed_steps: int = 0
 
 
 @dataclass
@@ -208,6 +216,8 @@ def march_fill(
     # position, i.e. by the volume delivered: on that clock it still does.
     lag_s = 0.0
     limited_steps = 0
+    slowed_steps = 0
+    p_free_max = 0.0
     stalled = False
     low_run = 0  # steps in a row at the limit with a rate below the stall fraction
     q_low_prev = 0.0
@@ -356,6 +366,7 @@ def march_fill(
                 stalled = low_run >= max(int(stall_steps), 1)
             else:
                 low_run = 0
+                slowed_steps += 1
             q_total = q_limited
         p = p0 + p_g * p1
         if q_total > 0:
@@ -364,6 +375,8 @@ def march_fill(
             # a short final step): what the end-of-fill pressure map reports
             p_report = (q_total / out1) * p1
             p_report_max = max(p_report_max, q_total / out1)
+            if not was_limited:
+                p_free_max = max(p_free_max, q_total / out1)
 
         flux = Sf * (p[fa] - p[fb])  # a -> b
         inflow = np.zeros(n)
@@ -434,7 +447,43 @@ def march_fill(
         stalled=stalled,
         pressure_limited_steps=limited_steps,
         gate_pressure_max_Pa=p_report_max,
+        gate_pressure_free_max_Pa=p_free_max,
+        pressure_slowed_steps=slowed_steps,
     )
+
+
+def enclosed_seams(unreached: np.ndarray, cavity: np.ndarray) -> bool:
+    """Whether the cells a stalled march left are lines with melt on both sides.
+
+    True when every one of them has, along ``x`` or along ``y``, a full cavity
+    cell on each side, next to it or one unreached cell away (a line at most
+    two cells wide) -- or lies against the cavity wall next to one that has: the
+    end of such a line, where it runs into the wall. A front that stopped and froze, met later by
+    another, leaves such a line. A rim or a channel the melt did not fill has a
+    wall on one side all along, and a region has cells with no full cell that
+    near: both are a short shot, whatever their width.
+    """
+    un = np.asarray(unreached, dtype=bool)
+    if not un.any():
+        return False
+    full = np.asarray(cavity, dtype=bool) & ~un
+    ny, nx = un.shape
+    f = np.pad(full, 2)
+    u = np.pad(un, 2)
+
+    def side(dy: int, dx: int) -> np.ndarray:
+        def at(arr, k):
+            return arr[2 + k * dy : 2 + k * dy + ny, 2 + k * dx : 2 + k * dx + nx]
+
+        return at(f, 1) | (at(u, 1) & at(f, 2))
+
+    both = un & ((side(0, -1) & side(0, 1)) | (side(-1, 0) & side(1, 0)))
+    # the end of a line at the wall: beside a cell of the line, and against the wall
+    b = np.pad(both, 1)
+    beside = b[:-2, 1:-1] | b[2:, 1:-1] | b[1:-1, :-2] | b[1:-1, 2:]
+    c = np.pad(np.asarray(cavity, dtype=bool), 1)
+    at_wall = ~(c[:-2, 1:-1] & c[2:, 1:-1] & c[1:-1, :-2] & c[1:-1, 2:])
+    return bool(np.all((both | (beside & at_wall))[un]))
 
 
 def _next_step(C, V, m, fa, fb, fr, newly, inflow, cfl, dt_max_s, rate) -> float:

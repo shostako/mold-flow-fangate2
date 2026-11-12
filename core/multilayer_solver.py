@@ -929,6 +929,22 @@ class MultilayerHeleShawSolver:
             # a short shot: the cells the melt did not reach take the time the fill
             # stalled, so every map downstream still has a value, and are flagged
             t_arr = np.where(unreached, res.t_end_s, t_arr)
+        # Why a stalled march stopped. "pressure_limit": it ran slowed at the limit
+        # before the rate fell away. "frozen_path": the limit never slowed it, and
+        # every face from a full cell to a cell left has a cell solid through on one
+        # side (its conductance is the trace) -- no machine pressure opens that.
+        # "undetermined": neither is shown (the limit passed next to nothing from
+        # its first step there, with melt on both sides of a face).
+        stall_cause = None
+        if res.stalled:
+            stall_cause = "pressure_limit" if res.pressure_slowed_steps > 0 else "undetermined"
+            if energy and res.pressure_slowed_steps == 0 and faces:
+                left = unreached.ravel()[cav]
+                solid = melt.conductance() <= S_trace
+                a, b = faces["a"], faces["b"]
+                edge = left[a] != left[b]
+                if edge.any() and bool(np.all(solid[a[edge]] | solid[b[edge]])):
+                    stall_cause = "frozen_path"
         T_fill = float(np.nanmax(t_arr))
 
         layer_T_K = layer_eta = layer_gamma_dot = layer_shear_dT_K = layer_Brinkman = None
@@ -1013,6 +1029,8 @@ class MultilayerHeleShawSolver:
             "march_unreached": unreached,
             "march_pressure_limited_steps": int(res.pressure_limited_steps),
             "march_gate_pressure_max_Pa": float(res.gate_pressure_max_Pa),
+            "march_gate_pressure_free_max_Pa": float(res.gate_pressure_free_max_Pa),
+            "march_stall_cause": stall_cause,
             "march_volume_fraction": float(res.volume_held_m3 / (V_open * 1e-9)),
             "energy_dissipated_J": float(melt.dissipated_J) if energy else 0.0,
             "energy_heated_J": float(melt.heated_J) if energy else 0.0,
@@ -1174,6 +1192,15 @@ class MultilayerHeleShawSolver:
                     "march_unreached_cells": int(np.sum(st["march_unreached"])),
                     "march_pressure_limited_steps": int(st["march_pressure_limited_steps"]),
                     "march_gate_pressure_max_MPa": float(st["march_gate_pressure_max_Pa"]) / 1e6,
+                    "march_gate_pressure_free_max_MPa": float(st["march_gate_pressure_free_max_Pa"])
+                    / 1e6,
+                    "march_stall_cause": st.get("march_stall_cause"),
+                    "injection_pressure_limit_MPa": (
+                        None
+                        if self.injection_pressure_limit_Pa is None
+                        or self.thermal_model != "energy"
+                        else float(self.injection_pressure_limit_Pa) / 1e6
+                    ),
                     "march_volume_fraction": float(st["march_volume_fraction"]),
                     "energy_dissipated_J": float(st["energy_dissipated_J"]),
                     "energy_heated_J": float(st["energy_heated_J"]),

@@ -151,3 +151,6 @@ def test_a_fill_that_stalls_before_the_switch_hands_over_where_it_stopped():
     # the switch is at the cells the melt filled (the partly filled front holds the rest)
     assert 0.0 < hold["vp_switch_fill_percent"] <= 100.0 * md["march_volume_fraction"]
     assert "で止まった" in texts(at)
+    # the result pane says why: here the limit, not a frozen seam
+    assert md["march_stall_cause"] == "pressure_limit"
+    assert "射出圧の上限（20 MPa）に達して流量が落ち" in texts(at)

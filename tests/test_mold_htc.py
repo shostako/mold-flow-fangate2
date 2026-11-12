@@ -13,7 +13,7 @@ from core.multilayer_solver import MultilayerHeleShawSolver
 PMMA = MaterialDB()["PMMA"]
 
 
-def _strip(htc):
+def _strip(htc, **kw):
     # a 1 mm strip, 300 mm long: PMMA stops at about 150 mm with the wall at
     # the mold temperature (tests/test_two_phase_energy.py)
     cell, ny, nx = 4.0, 5, 75
@@ -37,7 +37,18 @@ def _strip(htc):
         fill_method="march",
         thermal_model="energy",
         mold_htc_fill_W_m2K=htc,
+        **kw,
     ).solve(num_frames=2)
+
+
+def test_a_limit_that_passes_nothing_from_the_start_is_not_called_a_frozen_path():
+    # 1 kPa moves next to nothing through molten PMMA: the march stalls in its
+    # first steps with melt on both sides of the front's faces. Nothing froze, and
+    # the limit never ran slowed either: the record cannot say which (Codex P2 on PR #25)
+    md = _strip(None, injection_pressure_limit_Pa=1e3).metadata
+    assert md["march_stalled"] and md["march_volume_fraction"] < 0.05
+    assert md["march_stall_cause"] == "undetermined"
+    assert md["injection_pressure_limit_MPa"] == pytest.approx(1e-3)
 
 
 def test_the_melt_runs_further_behind_a_contact_resistance():
@@ -46,6 +57,9 @@ def test_the_melt_runs_further_behind_a_contact_resistance():
     assert ideal.metadata["mold_htc_fill_W_m2K"] is None
     assert contact.metadata["mold_htc_fill_W_m2K"] == 5000.0
     assert ideal.metadata["march_stalled"]
+    # the pressure climbs to the limit as the strip freezes: the limit stops it
+    assert ideal.metadata["march_stall_cause"] == "pressure_limit"
+    assert ideal.metadata["march_gate_pressure_free_max_MPa"] > 200.0
     # Bi = 5000·1 mm / k ≈ 25: the skin grows slower, the strip passes more
     assert (
         contact.metadata["march_volume_fraction"] > 1.05 * ideal.metadata["march_volume_fraction"]

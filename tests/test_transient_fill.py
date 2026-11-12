@@ -15,7 +15,7 @@ import pytest
 from core.geometry import Geometry
 from core.materials import MaterialDB
 from core.multilayer_solver import MultilayerHeleShawSolver
-from core.transient_fill import march_fill
+from core.transient_fill import enclosed_seams, march_fill
 from core.two_phase import solve_two_phase_short_shot
 
 MM3 = 1e-9  # m^3
@@ -413,6 +413,64 @@ def test_a_conductance_that_stays_shut_is_a_stall():
         t_start_s=0.1, dt_max_s=0.05, pressure_limit_Pa=1e6,
     )  # fmt: skip
     assert res.stalled and not res.complete
+
+
+def test_a_stall_says_whether_the_limit_slowed_the_melt_first():
+    mask, cap, Q = _limited_strip()
+    # (a) the limit passes a fifth of the rate into the first cell and less with
+    # every cell the front moves on: the melt runs slowed, then stalls
+    slowed = march_fill(
+        mask, cap, [(0, 0)], lambda t: Q * t, lambda idx, t: np.full(idx.shape, 2e-15),
+        t_start_s=0.1, dt_max_s=0.05, pressure_limit_Pa=1e6, max_steps=200000,
+    )  # fmt: skip
+    assert slowed.stalled and slowed.pressure_slowed_steps > 0
+    # (b) the way shuts at once, far below the limit: no step ran slowed
+    level = {"s": 1e-9}
+
+    def shut(st):
+        if st.t_s > 1.0:
+            level["s"] = 1e-30
+        return np.full(mask.size, level["s"])
+
+    frozen = march_fill(
+        mask, cap, [(0, 0)], lambda t: Q * t, lambda idx, t: np.full(idx.shape, level["s"]),
+        t_start_s=0.1, dt_max_s=0.05, pressure_limit_Pa=1e6, on_step=shut,
+    )  # fmt: skip
+    assert frozen.stalled and frozen.pressure_slowed_steps == 0
+    assert 0.0 < frozen.gate_pressure_free_max_Pa < 0.01 * 1e6
+    assert frozen.gate_pressure_max_Pa == pytest.approx(1e6)
+
+
+def test_enclosed_seams_wants_melt_on_both_sides_of_the_line():
+    cav = np.ones((9, 9), dtype=bool)
+    un = np.zeros((9, 9), dtype=bool)
+    assert not enclosed_seams(un, cav)
+    un[2:7, 3] = True
+    un[2:7, 4] = True  # two cells wide, full cells left and right
+    un[7, 5] = un[8, 6] = (
+        True  # a diagonal run of single cells (the last at the wall: up/down fails, left/right holds)
+    )
+    assert enclosed_seams(un, cav)
+    un[2:7, 5] = True  # three wide: the middle column is two cells from any full cell
+    assert not enclosed_seams(un, cav)
+    # the line may end at the wall: its last cell has the wall on one side
+    end = np.zeros((9, 9), dtype=bool)
+    end[4, 1:4] = True
+    end[4:6, 0] = (
+        True  # (5, 0): the wall to its left, an unreached cell above, full below and right
+    )
+    end[6, 0] = True  # two unreached cells above it: only "beside the line, at the wall" holds
+    assert enclosed_seams(end, cav)
+    # a rim one cell wide along the wall, however long: a wall on one side, not a seam
+    rim = np.zeros((9, 9), dtype=bool)
+    rim[0, 2:8] = True
+    assert not enclosed_seams(rim, cav)
+    # a channel one cell wide left unfilled past its mouth: its sides are outside the cavity
+    chan = np.zeros((3, 9), dtype=bool)
+    chan[1, :] = True
+    left = chan.copy()
+    left[1, :3] = False
+    assert not enclosed_seams(left, chan)
 
 
 def test_a_held_back_screw_changes_stage_by_the_volume_it_delivered():
