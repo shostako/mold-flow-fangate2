@@ -352,7 +352,7 @@ class MultilayerHeleShawSolver:
     #: it cannot be reached at any pressure, and a march that delivers the volume
     #: whatever it takes breaks down there. At the limit the fill slows, and
     #: stops as a short shot when it stalls.
-    injection_pressure_limit_Pa: float | None = field(default=200.0e6, kw_only=True)
+    injection_pressure_limit_Pa: float | None = field(default=280.0e6, kw_only=True)
 
     # Internal helper, populated in __post_init__.
     _base: HeleShawSolver = field(init=False, repr=False)

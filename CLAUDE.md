@@ -101,7 +101,7 @@
 
 - 層の温度を刻みごとに解く（v0.15.0）: `core/layer_heat.py`（16 層の熱伝導・層ごとの運び・剪断発熱、`carry` で小分け）と `core/melt_state.py`（充填の状態）。
   `MultilayerHeleShawSolver(thermal_model="energy")`、時間で追う解き方のときだけ。UI は層別の「層の温度の解き方」（key `thermal_model`、既定は従来の `arrival`）と
-  「射出圧の上限」（`inj_p_limit_mpa`、既定 200）。射出圧縮 ON では到達時刻から読む方に戻す。保圧を解くときは VP 切替の時点の状態（`thermal_snapshots`）を
+  「射出圧の上限」（`inj_p_limit_mpa`、既定 280、上限 400。ユーザーの指定 2026-11-12）。射出圧縮 ON では到達時刻から読む方に戻す。保圧を解くときは VP 切替の時点の状態（`thermal_snapshots`）を
   `solve_packing(thermal="layers", initial_theta=…)` に渡す（粗い格子でも状態を肉厚の重みで粗くして渡す）。設計と確かめは `docs/energy-fill-design.md`、数字は CHANGELOG [0.15.0]。
   - **熱の運びは必ず `carry` で小分けにする。** `advect` を 1 刻み 1 回で呼ぶと、マスを通り過ぎる流れ（クーラン数 > 1）で冷えすぎる（1 mm の流動長が 117/37 mm と格子でずれた）
   - 2 mm 以下の格子で使う（4 mm・1 mm は軸に対して左右対称に切れない。4 mm だと流れの集まり方が片側に寄る）

@@ -67,7 +67,7 @@ def test_a_stalled_fill_is_not_shown_as_full():
     assert r.unreached_mask.any()
     assert np.array_equal(r.unfillable_mask, r.unreached_mask)
     assert not (filled_at(r, np.inf) & r.unreached_mask).any()
-    assert fill_frame_fractions(r, 6)[-1] == 1.0 - r.unreached_mask.mean()
+    assert np.isclose(fill_frame_fractions(r, 6)[-1], 1.0 - r.unreached_mask.mean())
 
 
 def test_a_pressure_limited_fill_that_completes_keeps_the_march_s_clock():

@@ -68,7 +68,7 @@ def test_layered_temperature_goes_from_the_fill_to_the_holding_solve():
     with zipfile.ZipFile(io.BytesIO(at.session_state["mfs_zip_bytes"])) as zf:
         settings = json.loads(zf.read("settings.json"))
         assert settings["wall_cooling"]["thermal_model"] == "energy"
-        assert settings["wall_cooling"]["injection_pressure_limit_MPa"] == 200.0
+        assert settings["wall_cooling"]["injection_pressure_limit_MPa"] == 280.0
 
 
 def test_the_temperature_choice_needs_the_marching_fill():
