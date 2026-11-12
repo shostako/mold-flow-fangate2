@@ -5,6 +5,13 @@
 
 ## [Unreleased]
 
+## [0.15.1] — 2026-11-12
+
+### 変更
+
+- 層の温度を刻みごとに解くときの「射出圧の上限」の既定を 200 MPa から 280 MPa にした（ユーザーの指定。画面では 20〜400 MPa を選べる）。
+  ライブラリの既定（`injection_pressure_limit_Pa`）も 280 MPa。温度を到達時刻から読む方（既定）の結果は変わらない。
+
 ## [0.15.0] — 2026-11-12
 
 **層の温度を「刻みごとに解く」解き方と、保圧の結果に「バリ注意（PL）」を足した。** 層別・時間で追う解き方のとき、厚さ方向 16 層の温度を
@@ -25,7 +32,7 @@
   刻みに下限（最長の刻みの 2 %）を置く。スクリューの遅れは時計のずれとして持ち、設定の射出と段の切替はスクリューの時計（送った体積）で読む（遅れたぶん設定が後ろへ延びる）。
   0.5 mm の細長い板に 20 MPa で、流動長は 15.8 mm（2 mm 格子）・15.3 mm（1 mm 格子）、判定の回数を 5 → 50 にしても変わらない。
 - `core/multilayer_solver.py`: `thermal_model="arrival"|"energy"`、`energy_layers`、`thermal_snapshot_fractions`（保圧へ渡す状態を残す充填率）、
-  `injection_pressure_limit_Pa`（既定 200 MPa）。結果に `thermal_theta_end` と `thermal_snapshots`。
+  `injection_pressure_limit_Pa`（既定 200 MPa。v0.15.1 で 280 MPa）。結果に `thermal_theta_end` と `thermal_snapshots`。
 - `core/packing_solve.py`: `thermal="series"|"layers"` と `initial_theta`（充填の状態を受け取る）。結果に `molten_peak_pressure_Pa`・
   `molten_peak_time_s`（厚さの中心が溶けている間の最大の圧力と、その時刻）。粗い格子で解くときは状態も肉厚の重みで粗くする。
 - `core/flash.py`: バリ注意。輪郭のマス（`outline_cells`）を PL とみなし、溶けている間の最大の圧力で製品とランナを別々に順位付けする

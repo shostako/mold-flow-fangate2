@@ -1166,7 +1166,7 @@ with st.sidebar:
         solid_fraction = 0.3
         fill_method = "tau"
         thermal_model = "arrival"
-        inj_p_limit_mpa = 200.0
+        inj_p_limit_mpa = 280.0
 
         if wall_model == "skin":
             c_skin = st.slider(
@@ -1282,7 +1282,7 @@ with st.sidebar:
                 "射出圧の上限 [MPa]",
                 min_value=20.0,
                 max_value=400.0,
-                value=200.0,
+                value=280.0,
                 step=10.0,
                 key="inj_p_limit_mpa",
                 disabled=thermal_model != "energy",
