@@ -1013,6 +1013,17 @@ class MultilayerHeleShawSolver:
             "march_unreached": unreached,
             "march_pressure_limited_steps": int(res.pressure_limited_steps),
             "march_gate_pressure_max_Pa": float(res.gate_pressure_max_Pa),
+            "march_gate_pressure_free_max_Pa": float(res.gate_pressure_free_max_Pa),
+            # why a stalled march stopped: at the limit with the rate falling away
+            # ("pressure_limit"), or with the way to the cells left frozen shut
+            # before the limit ever slowed the melt ("frozen_path")
+            "march_stall_cause": (
+                None
+                if not res.stalled
+                else "pressure_limit"
+                if res.pressure_slowed_steps > 0
+                else "frozen_path"
+            ),
             "march_volume_fraction": float(res.volume_held_m3 / (V_open * 1e-9)),
             "energy_dissipated_J": float(melt.dissipated_J) if energy else 0.0,
             "energy_heated_J": float(melt.heated_J) if energy else 0.0,
@@ -1174,6 +1185,15 @@ class MultilayerHeleShawSolver:
                     "march_unreached_cells": int(np.sum(st["march_unreached"])),
                     "march_pressure_limited_steps": int(st["march_pressure_limited_steps"]),
                     "march_gate_pressure_max_MPa": float(st["march_gate_pressure_max_Pa"]) / 1e6,
+                    "march_gate_pressure_free_max_MPa": float(st["march_gate_pressure_free_max_Pa"])
+                    / 1e6,
+                    "march_stall_cause": st.get("march_stall_cause"),
+                    "injection_pressure_limit_MPa": (
+                        None
+                        if self.injection_pressure_limit_Pa is None
+                        or self.thermal_model != "energy"
+                        else float(self.injection_pressure_limit_Pa) / 1e6
+                    ),
                     "march_volume_fraction": float(st["march_volume_fraction"]),
                     "energy_dissipated_J": float(st["energy_dissipated_J"]),
                     "energy_heated_J": float(st["energy_heated_J"]),

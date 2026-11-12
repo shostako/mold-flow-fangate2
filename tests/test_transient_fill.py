@@ -15,7 +15,7 @@ import pytest
 from core.geometry import Geometry
 from core.materials import MaterialDB
 from core.multilayer_solver import MultilayerHeleShawSolver
-from core.transient_fill import march_fill
+from core.transient_fill import march_fill, only_seams
 from core.two_phase import solve_two_phase_short_shot
 
 MM3 = 1e-9  # m^3
@@ -413,6 +413,43 @@ def test_a_conductance_that_stays_shut_is_a_stall():
         t_start_s=0.1, dt_max_s=0.05, pressure_limit_Pa=1e6,
     )  # fmt: skip
     assert res.stalled and not res.complete
+
+
+def test_a_stall_says_whether_the_limit_slowed_the_melt_first():
+    mask, cap, Q = _limited_strip()
+    # (a) the limit passes a fifth of the rate into the first cell and less with
+    # every cell the front moves on: the melt runs slowed, then stalls
+    slowed = march_fill(
+        mask, cap, [(0, 0)], lambda t: Q * t, lambda idx, t: np.full(idx.shape, 2e-15),
+        t_start_s=0.1, dt_max_s=0.05, pressure_limit_Pa=1e6, max_steps=200000,
+    )  # fmt: skip
+    assert slowed.stalled and slowed.pressure_slowed_steps > 0
+    # (b) the way shuts at once, far below the limit: no step ran slowed
+    level = {"s": 1e-9}
+
+    def shut(st):
+        if st.t_s > 1.0:
+            level["s"] = 1e-30
+        return np.full(mask.size, level["s"])
+
+    frozen = march_fill(
+        mask, cap, [(0, 0)], lambda t: Q * t, lambda idx, t: np.full(idx.shape, level["s"]),
+        t_start_s=0.1, dt_max_s=0.05, pressure_limit_Pa=1e6, on_step=shut,
+    )  # fmt: skip
+    assert frozen.stalled and frozen.pressure_slowed_steps == 0
+    assert 0.0 < frozen.gate_pressure_free_max_Pa < 0.01 * 1e6
+    assert frozen.gate_pressure_max_Pa == pytest.approx(1e6)
+
+
+def test_only_seams_tells_a_line_from_a_region():
+    un = np.zeros((8, 8), dtype=bool)
+    assert not only_seams(un)
+    un[2:7, 3] = True
+    un[2:7, 4] = True  # two cells wide
+    un[1, 1] = True
+    assert only_seams(un)
+    un[2:7, 5] = True  # three wide: the middle column has no reached neighbour
+    assert not only_seams(un)
 
 
 def test_a_held_back_screw_changes_stage_by_the_volume_it_delivered():

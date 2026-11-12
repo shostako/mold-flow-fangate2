@@ -46,6 +46,9 @@ def test_the_melt_runs_further_behind_a_contact_resistance():
     assert ideal.metadata["mold_htc_fill_W_m2K"] is None
     assert contact.metadata["mold_htc_fill_W_m2K"] == 5000.0
     assert ideal.metadata["march_stalled"]
+    # the pressure climbs to the limit as the strip freezes: the limit stops it
+    assert ideal.metadata["march_stall_cause"] == "pressure_limit"
+    assert ideal.metadata["march_gate_pressure_free_max_MPa"] > 200.0
     # Bi = 5000·1 mm / k ≈ 25: the skin grows slower, the strip passes more
     assert (
         contact.metadata["march_volume_fraction"] > 1.05 * ideal.metadata["march_volume_fraction"]

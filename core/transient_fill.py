@@ -78,6 +78,14 @@ class MarchFillResult:
     stalled: bool = False  # stopped at the pressure limit with the rate fallen away
     pressure_limited_steps: int = 0  # steps the gate spent at the pressure limit
     gate_pressure_max_Pa: float = 0.0  # highest gate pressure the injection needed
+    #: highest gate pressure of the steps the limit did not hold back: what the
+    #: fill needed before it met the limit
+    gate_pressure_free_max_Pa: float = 0.0
+    #: steps at the limit that still delivered more than the stall fraction of the
+    #: programmed rate. A stalled march with none of these never ran slowed at the
+    #: limit: the way to the cells left closed outright (it froze), and no machine
+    #: pressure would have opened it.
+    pressure_slowed_steps: int = 0
 
 
 @dataclass
@@ -208,6 +216,8 @@ def march_fill(
     # position, i.e. by the volume delivered: on that clock it still does.
     lag_s = 0.0
     limited_steps = 0
+    slowed_steps = 0
+    p_free_max = 0.0
     stalled = False
     low_run = 0  # steps in a row at the limit with a rate below the stall fraction
     q_low_prev = 0.0
@@ -356,6 +366,7 @@ def march_fill(
                 stalled = low_run >= max(int(stall_steps), 1)
             else:
                 low_run = 0
+                slowed_steps += 1
             q_total = q_limited
         p = p0 + p_g * p1
         if q_total > 0:
@@ -364,6 +375,8 @@ def march_fill(
             # a short final step): what the end-of-fill pressure map reports
             p_report = (q_total / out1) * p1
             p_report_max = max(p_report_max, q_total / out1)
+            if not was_limited:
+                p_free_max = max(p_free_max, q_total / out1)
 
         flux = Sf * (p[fa] - p[fb])  # a -> b
         inflow = np.zeros(n)
@@ -434,7 +447,23 @@ def march_fill(
         stalled=stalled,
         pressure_limited_steps=limited_steps,
         gate_pressure_max_Pa=p_report_max,
+        gate_pressure_free_max_Pa=p_free_max,
+        pressure_slowed_steps=slowed_steps,
     )
+
+
+def only_seams(unreached: np.ndarray) -> bool:
+    """Whether the cells a stalled march left are lines at most two cells wide.
+
+    True when every one of them has a 4-neighbour that is not one of them. A
+    front that stopped and froze, met later by another, leaves such a line (a
+    front cell takes its conductance from the melt already in it); a region the
+    melt could not reach has cells with all four neighbours unreached.
+    """
+    un = np.asarray(unreached, dtype=bool)
+    pad = np.pad(un, 1)
+    inner = pad[1:-1, 1:-1] & pad[:-2, 1:-1] & pad[2:, 1:-1] & pad[1:-1, :-2] & pad[1:-1, 2:]
+    return bool(un.any() and not inner.any())
 
 
 def _next_step(C, V, m, fa, fb, fr, newly, inflow, cfl, dt_max_s, rate) -> float:
