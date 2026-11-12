@@ -76,7 +76,15 @@ from scipy.ndimage import label as ndi_label
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import splu
 
-from .layer_heat import carry, conduct, flow_shares, layer_grid, shear_heating, wall_contact
+from .layer_heat import (
+    carry,
+    conduct,
+    flow_shares,
+    freeze_fourier,
+    layer_grid,
+    shear_heating,
+    wall_contact,
+)
 from .materials import Material
 from .packing import freeze_age_s
 
@@ -503,6 +511,12 @@ def solve_packing(
     # state is no hotter than that, and the slab's own estimate (t_freeze, by
     # the melt's age) says nothing about a state handed over from the fill
     fresh_freeze = float(np.max(freeze_age_s(thk[mask], alpha, solid_fraction)))
+    if htc_packing_W_m2K is not None:
+        # behind a contact the slab cools slower: its own time, at the poorer of
+        # the two coefficients (a cell can be off the wall from the start)
+        poorest = min(float(htc_packing_W_m2K), float(htc_detached_W_m2K))
+        slowest = wall_contact(poorest * biot_per_htc, n_z)
+        fresh_freeze = float(np.max(freeze_fourier(slowest, grid, solid_fraction) / fourier_rate))
     if end_time_s is None:
         longest = fresh_freeze if layered else float(np.max(t_freeze))
         end_time_s = max(float(hold_time_s), longest) * 1.02 + 1e-3

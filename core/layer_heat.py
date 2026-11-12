@@ -164,6 +164,34 @@ def conduct(
     return _conduct_parts(theta, _decay_parts(fourier_step, grid, wall))
 
 
+def freeze_fourier(
+    wall: WallContact, grid: LayerGrid, solid_fraction: float, *, tol: float = 1e-4
+) -> np.ndarray:
+    """Fourier number ``α·t/h²`` at which the centre of a slab that starts as
+    all melt (``θ = 1``) and only conducts falls to ``solid_fraction``, per
+    cell of ``wall``. ``inf`` behind an insulated wall."""
+    if not 0.0 < solid_fraction < 1.0:
+        raise ValueError(f"solid_fraction must be in (0, 1) (got {solid_fraction})")
+    out = np.empty(wall.n)
+    one = np.ones((1, grid.n_z))
+    for cells, g in wall.groups:
+        if g.decay.max() >= -1e-8:  # a mode that does not decay: insulated
+            out[cells] = np.inf
+            continue
+
+        def centre(fo: float, g=g) -> float:
+            return float(conduct_by(one, decay_factors(np.array([fo]), g), g)[0, 0])
+
+        lo, hi = 0.0, 0.05
+        while centre(hi) > solid_fraction:
+            lo, hi = hi, 2.0 * hi
+        while hi - lo > tol * hi:
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if centre(mid) > solid_fraction else (lo, mid)
+        out[cells] = hi
+    return out
+
+
 def _decay_parts(fourier_step: np.ndarray, grid: LayerGrid, wall: WallContact | None) -> list:
     """``(cells, grid, factors)`` per group of cells that share an operator
     (``cells`` ``None``: all of them)."""

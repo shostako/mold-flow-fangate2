@@ -11,6 +11,7 @@ from core.layer_heat import (
     conduct,
     face_dissipation,
     flow_shares,
+    freeze_fourier,
     layer_grid,
     shear_heating,
     wall_contact,
@@ -325,3 +326,20 @@ def test_carry_conducts_through_the_contact():
         np.zeros(3, dtype=bool), fo, g, wall=wall,
     )  # fmt: skip
     assert np.allclose(got, conduct(theta, fo, g, wall), atol=1e-12)
+
+
+def test_freeze_time_behind_a_contact():
+    g = layer_grid(16)
+    biot = np.array([np.inf, 50.0, 5.0, 0.5, 0.0])
+    fo = freeze_fourier(wall_contact(biot, 16), g, 0.3)
+    assert np.isinf(fo[-1]) and np.all(np.diff(fo[:4]) > 0.0)
+    # the centre is at the solid fraction there, and the ideal wall agrees with the series
+    for b, f in zip(biot[:4], fo[:4], strict=True):
+        got = conduct(np.ones((1, 16)), np.array([f]), g, wall_contact(np.array([b]), 16))[0, 0]
+        assert got == pytest.approx(0.3, abs=2e-3)
+    assert fo[2] == pytest.approx(
+        next(f for f in np.linspace(0.05, 2.0, 4000) if _robin_slab(5.0, f, g.xi)[0] <= 0.3),
+        rel=0.03,
+    )
+    with pytest.raises(ValueError, match="solid_fraction must be in"):
+        freeze_fourier(wall_contact(biot, 16), g, 1.0)

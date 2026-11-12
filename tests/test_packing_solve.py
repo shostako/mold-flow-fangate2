@@ -563,6 +563,19 @@ def test_a_cell_off_the_wall_cools_by_the_detached_coefficient():
     assert loose.times_s[-1] > 1.2 * same.times_s[-1]
 
 
+def test_the_march_waits_for_a_slab_behind_a_poor_contact():
+    # 1 mm PMMA behind 100 W/(m²·K), no holding: the centre takes about 15 s
+    # (1.3 s with the wall at the mold temperature). The march must not stop
+    # at a limit taken from the ideal wall while the melt is still molten.
+    mask, thk, t_arr, gates = _plate(1.0, 0.2, ny=3, nx=8)
+    hot = np.ones((*mask.shape, 16))
+    r = _solve(
+        mask, thk, t_arr, gates, 0.0, 0.0,
+        thermal="layers", initial_theta=hot, htc_packing_W_m2K=100.0, htc_detached_W_m2K=100.0,
+    )  # fmt: skip
+    assert 12.0 < r.times_s[-1] < 20.0
+
+
 def test_heat_transfer_coefficients_are_checked():
     mask, thk, t_arr, gates = _plate(3.0, 1.0, ny=4, nx=12)
     with pytest.raises(ValueError, match="needs thermal='layers'"):
