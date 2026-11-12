@@ -7,8 +7,6 @@ import json
 import zipfile
 from pathlib import Path
 
-import pytest
-
 from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts
 
@@ -94,10 +92,9 @@ def test_a_fill_that_stalls_before_the_switch_hands_over_where_it_stopped():
     at.checkbox(key="hold_on").set_value(True).run()
     at.radio(key="fill_method").set_value("march").run()
     at.radio(key="thermal_model").set_value("energy").run()
-    at.number_input(key="inj_p_limit_mpa").set_value(20.0)
-    # switching at 100 %: the fill stops short of it (on the 4 mm grid a few
-    # cells of the thin rim are never reached), so the switch comes where it stopped
-    at.number_input(key="hold_vp_pct").set_value(100.0).run()
+    # a 0.5 mm rim at 20 MPa: the melt fills the runner and stops at the rim
+    at.number_input(key="fg_frame_thk_mm").set_value(0.5)
+    at.number_input(key="inj_p_limit_mpa").set_value(20.0).run()
     at.button[0].click().run()
     assert not at.exception
     md = at.session_state["mfs_result"].metadata
@@ -105,7 +102,6 @@ def test_a_fill_that_stalls_before_the_switch_hands_over_where_it_stopped():
     hold = at.session_state["mfs_hold_info"]
     assert hold["thermal"] == "layers"
     assert hold["vp_switch_note"] and "で止まった" in hold["vp_switch_note"]
-    assert hold["vp_switch_fill_percent"] == pytest.approx(
-        100.0 * md["march_volume_fraction"], abs=0.5
-    )
+    # the switch is at the cells the melt filled (the partly filled front holds the rest)
+    assert 0.0 < hold["vp_switch_fill_percent"] <= 100.0 * md["march_volume_fraction"]
     assert "で止まった" in texts(at)

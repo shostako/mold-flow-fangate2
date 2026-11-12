@@ -130,6 +130,7 @@ def march_fill(
     on_step: Callable[[MarchStep], np.ndarray | None] | None = None,
     pressure_limit_Pa: float | None = None,
     stall_rate_fraction: float = 0.01,
+    stall_steps: int = 5,
 ) -> MarchFillResult:
     """Advance the melt front from the gates until the cavity is full.
 
@@ -165,8 +166,12 @@ def march_fill(
         whatever it takes.
     stall_rate_fraction
         With a pressure limit, the march stops as stalled once the rate at the
-        limit has fallen below this fraction of the programmed rate; the cells
-        still not full keep ``t_arr = NaN`` and ``complete`` is ``False``.
+        limit has stayed below this fraction of the programmed rate, without
+        growing by half, for ``stall_steps`` steps in a row; the cells still not full
+        keep ``t_arr = NaN`` and ``complete`` is ``False``. (A conductance that
+        ``on_step`` derives from the flow starts from no flow at all -- the
+        zero-shear value -- and grows step by step towards the flow it allows:
+        a slow first step is not a stall.)
     """
     if not 0.0 < cfl <= 1.0:
         raise ValueError(f"cfl must be in (0, 1] (got {cfl})")
@@ -202,6 +207,9 @@ def march_fill(
     lag_m3 = 0.0
     limited_steps = 0
     stalled = False
+    q_programmed_last = 0.0
+    low_run = 0  # steps in a row at the limit with a rate below the stall fraction
+    q_low_prev = 0.0
     p_report_max = 0.0
     bps = sorted(b for b in breakpoints_s if b > t)
     probe = min(float(dt_max_s), 1e-6 * max(abs(t), 1.0))
@@ -256,6 +264,14 @@ def march_fill(
         else:
             v_next = v_prev_inj
         q_total = (v_next - v_prev_inj) / dt
+        if pressure_limit_Pa is not None:
+            if q_total > 0:
+                q_programmed_last = q_total
+            elif lag_m3 > 0 and q_programmed_last > 0:
+                # the programme has run out with the screw still behind it: the
+                # machine keeps pushing at its last rate (the limit holds it back)
+                q_total = q_programmed_last
+                v_next = v_prev_inj + q_total * dt
         # unknowns: full cells that are not gates; Dirichlet: front (0) and gates (p_g)
         unk = full & ~is_gate
         u = np.flatnonzero(unk)
@@ -316,7 +332,9 @@ def march_fill(
         if out1 <= 0:
             raise RuntimeError("the gate cells have no open face to the melt")
         p_g = (q_total - out0) / out1
+        was_limited = False
         if pressure_limit_Pa is not None and p_g > pressure_limit_Pa and q_total > 0:
+            was_limited = True
             # the machine is at its limit: the gate stays there, the rate follows
             p_g = float(pressure_limit_Pa)
             q_limited = max(out0 + p_g * out1, 0.0)
@@ -324,7 +342,17 @@ def march_fill(
             v_next = v_prev_inj + q_limited * dt
             limited_steps += 1
             if q_limited < stall_rate_fraction * q_total:
-                stalled = True
+                # a rate still growing (the flow-dependent conductance settling) starts over
+                # (growing = half as much again as the most this run has seen: a rate
+                # that only wobbles cannot keep that up below the stall fraction)
+                if low_run and q_limited <= 1.5 * q_low_prev:
+                    low_run += 1
+                else:
+                    low_run = 1
+                q_low_prev = max(q_limited, q_low_prev if low_run > 1 else 0.0)
+                stalled = low_run >= max(int(stall_steps), 1)
+            else:
+                low_run = 0
             q_total = q_limited
         p = p0 + p_g * p1
         if q_total > 0:
@@ -380,8 +408,17 @@ def march_fill(
 
         # the next step's inflow scales with the delivery rate (a switch just passed)
         r_next = rate_ahead(t)
+        if was_limited:
+            # at the pressure limit the melt comes in at the rate the limit gives,
+            # not the programme's: size the step by what did flow
+            r_next = min(r_next, q_total) if q_total > 0 else r_next
         scale = r_next / max(q_total, 1e-300) if q_total > 0 else 1.0
         dt = _next_step(C, V, m, fa, fb, fr, newly, inflow * scale, cfl, dt_max_s, r_next)
+        if was_limited:
+            # A front cell that is nearly full, fed at the limit's falling rate, is
+            # approached in ever shorter steps and never reached. Below this the
+            # step is not cut further (the surplus moves on with the next step).
+            dt = max(dt, 0.02 * float(dt_max_s))
 
     return MarchFillResult(
         t_arr_s=np.where(m, t_arr, np.nan).reshape(ny, nx),

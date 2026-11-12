@@ -377,3 +377,39 @@ def test_a_staged_profile_reaches_the_marcher_with_its_switches():
     finally:
         ms.march_fill = real
     assert np.max(np.abs(r_nb.fill_time_s[1] - f_tau)) > 3 * t_cell_fast
+
+
+def _limited_strip(nx=30):
+    mask = np.ones((1, nx), dtype=bool)
+    cap = np.full((1, nx), 1.0 * MM3)
+    Q = 10.0 * MM3
+    return mask, cap, Q
+
+
+def test_a_conductance_that_grows_with_the_flow_is_not_a_stall():
+    # the first steps at the limit pass almost nothing (as a zero-shear start
+    # of a shear-thinning melt would); on_step lifts the conductance tenfold a
+    # step until it lets the programmed rate through
+    mask, cap, Q = _limited_strip()
+    level = {"s": 1e-22}
+
+    def grow(st):
+        level["s"] = min(level["s"] * 10.0, 1e-12)
+        return np.full(mask.size, level["s"])
+
+    # (a cell the front reaches takes the level reached so far, as the fed flux does)
+    res = march_fill(
+        mask, cap, [(0, 0)], lambda t: Q * t, lambda idx, t: np.full(idx.shape, level["s"]),
+        t_start_s=0.1, dt_max_s=0.05, on_step=grow, pressure_limit_Pa=1e6,
+    )  # fmt: skip
+    assert not res.stalled
+    assert res.complete
+
+
+def test_a_conductance_that_stays_shut_is_a_stall():
+    mask, cap, Q = _limited_strip()
+    res = march_fill(
+        mask, cap, [(0, 0)], lambda t: Q * t, lambda idx, t: np.full(idx.shape, 1e-22),
+        t_start_s=0.1, dt_max_s=0.05, pressure_limit_Pa=1e6,
+    )  # fmt: skip
+    assert res.stalled and not res.complete
