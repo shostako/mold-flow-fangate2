@@ -186,11 +186,15 @@ def advect(
 
     inflow = np.bincount(taker, amount, minlength=n)
     # full cells: layer by layer, at the donor's same layer
-    carried = np.bincount(
-        (taker[:, None] * n_z + np.arange(n_z)[None, :]).ravel(),
-        (amount[:, None] * theta[donor]).ravel(),
-        minlength=n * n_z,
-    ).reshape(n, n_z)
+    carried = (
+        np.bincount(
+            (taker[:, None] * n_z + np.arange(n_z)[None, :]).ravel(),
+            (amount[:, None] * theta[donor]).ravel(),
+            minlength=n * n_z,
+        )
+        .reshape(n, n_z)
+        .astype(float, copy=False)
+    )  # (an empty bincount comes back as int)
     # filling cells: the donor's flow-weighted mean, on every layer
     donor_bulk = np.einsum("ij,ij->i", shares, theta)
     stagnant = shares.sum(axis=1) <= 0.0

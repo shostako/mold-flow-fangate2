@@ -234,3 +234,15 @@ def test_carried_heat_does_not_depend_on_the_step():
     assert np.allclose(coarse, fine, atol=0.02)
     # the Graetz entry: the centre cools slowly over a few cm
     assert fine[0] > 0.98 and 0.85 < fine[2] < 0.95
+
+
+def test_a_step_with_no_flow_but_the_gate_keeps_float_profiles():
+    g = layer_grid(16)
+    th = np.full((3, 16), 0.5)
+    empty = np.zeros(0, dtype=np.intp)
+    out = advect(
+        th, flow_shares(np.ones((3, 16)), g), np.ones(3), empty, empty, np.zeros(0),
+        np.zeros(3, bool), g, source=np.array([1.0, 0.0, 0.0]),
+    )  # fmt: skip
+    assert out.dtype == float
+    assert out[0, 0] > 0.5 and np.allclose(out[1:], 0.5)
