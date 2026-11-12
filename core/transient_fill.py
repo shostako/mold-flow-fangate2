@@ -203,11 +203,12 @@ def march_fill(
     cap_total = float(C[m].sum())
     v_prev_inj = float(injected_volume_m3(t))
     # with a pressure limit the screw can fall behind its programme: the volume
-    # delivered is then counted on its own, and the programme only gives the rate
-    lag_m3 = 0.0
+    # is read on the screw's own clock, ``t − lag_s``, which stands still for the
+    # part of a step the limit held back. A staged profile switches by screw
+    # position, i.e. by the volume delivered: on that clock it still does.
+    lag_s = 0.0
     limited_steps = 0
     stalled = False
-    q_programmed_last = 0.0
     low_run = 0  # steps in a row at the limit with a rate below the stall fraction
     q_low_prev = 0.0
     p_report_max = 0.0
@@ -248,10 +249,11 @@ def march_fill(
         S[fr] = conductance(fr, np.full(fr.size, t))
 
         # a switch within round-off of now has been reached (t is a running sum)
-        while bps and bps[0] <= t + 1e-9 * max(abs(t), dt_max_s):
+        tp = t - lag_s  # the programme's clock
+        while bps and bps[0] <= tp + 1e-9 * max(abs(tp), dt_max_s):
             bps.pop(0)
         if bps:
-            dt = min(dt, bps[0] - t)
+            dt = min(dt, bps[0] - tp)
         # never deliver more than the cavity still has room for, net of the surplus
         # cells hold and pass on next step: the step that would overshoot is cut to
         # deliver exactly the room left, and once the melt in the cavity fills it
@@ -259,19 +261,11 @@ def march_fill(
         # room at zero the cut did not apply and a step could deliver dt_max's worth)
         room_left = float(np.sum(C[m] - V[m]))
         if room_left > ROOM_TOL * cap_total:
-            dt = max(min(dt, room_left / rate_ahead(t)), 1e-12)
-            v_next = float(injected_volume_m3(t + dt)) - lag_m3
+            dt = max(min(dt, room_left / rate_ahead(tp)), 1e-12)
+            v_next = float(injected_volume_m3(tp + dt))
         else:
             v_next = v_prev_inj
         q_total = (v_next - v_prev_inj) / dt
-        if pressure_limit_Pa is not None:
-            if q_total > 0:
-                q_programmed_last = q_total
-            elif lag_m3 > 0 and q_programmed_last > 0:
-                # the programme has run out with the screw still behind it: the
-                # machine keeps pushing at its last rate (the limit holds it back)
-                q_total = q_programmed_last
-                v_next = v_prev_inj + q_total * dt
         # unknowns: full cells that are not gates; Dirichlet: front (0) and gates (p_g)
         unk = full & ~is_gate
         u = np.flatnonzero(unk)
@@ -338,7 +332,16 @@ def march_fill(
             # the machine is at its limit: the gate stays there, the rate follows
             p_g = float(pressure_limit_Pa)
             q_limited = max(out0 + p_g * out1, 0.0)
-            lag_m3 += (q_total - q_limited) * dt
+            # the screw got as far as the programme does at tp + dt_done
+            lo, hi = 0.0, dt
+            target = v_prev_inj + q_limited * dt
+            for _ in range(60):
+                mid = 0.5 * (lo + hi)
+                if float(injected_volume_m3(tp + mid)) < target:
+                    lo = mid
+                else:
+                    hi = mid
+            lag_s += dt - 0.5 * (lo + hi)
             v_next = v_prev_inj + q_limited * dt
             limited_steps += 1
             if q_limited < stall_rate_fraction * q_total:
@@ -399,7 +402,7 @@ def march_fill(
                 behind = m & (V >= C * FULL_REL)
                 S[behind] = np.asarray(S_now, dtype=float)[behind]
         t += dt
-        if bps and abs(bps[0] - t) <= 1e-9 * max(abs(t), dt_max_s):
+        if lag_s == 0.0 and bps and abs(bps[0] - t) <= 1e-9 * max(abs(t), dt_max_s):
             t = bps[0]  # land on the switch, so the rate read after it is the new stage's
         v_prev_inj = v_next
         steps += 1
@@ -407,7 +410,7 @@ def march_fill(
             break
 
         # the next step's inflow scales with the delivery rate (a switch just passed)
-        r_next = rate_ahead(t)
+        r_next = rate_ahead(t - lag_s)
         if was_limited:
             # at the pressure limit the melt comes in at the rate the limit gives,
             # not the programme's: size the step by what did flow
