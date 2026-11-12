@@ -525,3 +525,49 @@ def test_a_hot_state_is_cooled_to_the_end_whatever_the_melt_s_age_says():
     assert r.times_s[-1] >= 0.95 * t_solid
     # sealed and cooling from all melt at 1 MPa: it ends at no pressure
     assert np.nanmax(r.freeze_pressure_Pa) < 0.2e6
+
+
+# ----- contact with the mould (heat transfer coefficients) -----
+
+
+def test_a_contact_resistance_keeps_the_melt_warm_longer():
+    # 1 mm, held for 1.0 s: with the wall at the mold temperature the centre
+    # solidifies (1.3 s from all melt, sooner with the cold start of a hold)
+    # while the gate still presses; behind a contact it is still molten when
+    # the gate closes, and the pressure is gone before it freezes
+    mask, thk, t_arr, gates = _channel(nx=20, ny=3, h_mm=1.0)[:4]
+    hot = np.ones((*mask.shape, 16))
+    kw = {"thermal": "layers", "initial_theta": hot}
+    ideal = _solve(mask, thk, t_arr, gates, 60e6, 1.0, **kw)
+    good = _solve(mask, thk, t_arr, gates, 60e6, 1.0, htc_packing_W_m2K=1.0e9, **kw)
+    poor = _solve(mask, thk, t_arr, gates, 60e6, 1.0, htc_packing_W_m2K=2500.0, **kw)
+    # a contact that passes everything is the wall at the mold temperature
+    assert np.nanmean(good.shrinkage) == pytest.approx(np.nanmean(ideal.shrinkage), rel=2e-3)
+    assert np.nanmean(ideal.freeze_pressure_Pa) > 5e6
+    assert np.nanmean(poor.freeze_pressure_Pa) < 1e6
+    assert np.nanmean(poor.shrinkage) > 1.2 * np.nanmean(ideal.shrinkage)
+    assert poor.times_s[-1] > ideal.times_s[-1]  # the march waits for the last centre
+
+
+def test_a_cell_off_the_wall_cools_by_the_detached_coefficient():
+    # no holding at all: every cell shrinks off the wall at once, so the whole
+    # cooling runs on the detached value; the march ends when the last centre
+    # is solid
+    mask, thk, t_arr, gates = _plate(2.0, 0.5, ny=4, nx=10)
+    hot = np.ones((*mask.shape, 16))
+    kw = {"thermal": "layers", "initial_theta": hot, "htc_packing_W_m2K": 2500.0}
+    same = _solve(mask, thk, t_arr, gates, 0.0, 0.0, **kw)
+    kept = _solve(mask, thk, t_arr, gates, 0.0, 0.0, htc_detached_W_m2K=2500.0, **kw)
+    loose = _solve(mask, thk, t_arr, gates, 0.0, 0.0, htc_detached_W_m2K=600.0, **kw)
+    assert same.times_s[-1] == pytest.approx(kept.times_s[-1])
+    assert loose.times_s[-1] > 1.2 * same.times_s[-1]
+
+
+def test_heat_transfer_coefficients_are_checked():
+    mask, thk, t_arr, gates = _plate(3.0, 1.0, ny=4, nx=12)
+    with pytest.raises(ValueError, match="needs thermal='layers'"):
+        _solve(mask, thk, t_arr, gates, 60e6, 4.0, htc_packing_W_m2K=2500.0)
+    with pytest.raises(ValueError, match="needs htc_packing_W_m2K"):
+        _solve(mask, thk, t_arr, gates, 60e6, 4.0, thermal="layers", htc_detached_W_m2K=1250.0)
+    with pytest.raises(ValueError, match="must be > 0"):
+        _solve(mask, thk, t_arr, gates, 60e6, 4.0, thermal="layers", htc_packing_W_m2K=0.0)

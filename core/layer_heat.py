@@ -26,9 +26,14 @@ the weights as their thicknesses; layer ``k`` of one cell is taken to feed
 layer ``k`` of the next whatever the two thicknesses (the Hele-Shaw mid-plane
 view: the same relative depth).
 
+The wall is at the mold temperature unless a contact is given
+(:func:`wall_contact`): then the melt's surface and the mould are joined by a
+heat transfer coefficient ``h_c`` [W/(m²·K)], the flux at the wall is
+``h_c·(T_surface − T_mold)``, and the slab cools as its Biot number
+``Bi = h_c·h/k`` allows (``Bi → ∞`` is the wall at the mold temperature).
+
 Not in the model: conduction in the plane, the heat of compression, the latent
-heat (PMMA has none), a contact resistance at the wall (the wall is at the mold
-temperature).
+heat (PMMA has none).
 """
 
 from __future__ import annotations
@@ -49,36 +54,30 @@ class LayerGrid:
     decay: np.ndarray  # (n_z,) eigenvalues of the conduction operator per unit Fourier number (≤ 0)
     modes: np.ndarray  # (n_z, n_z) columns: eigenvectors
     modes_inv: np.ndarray  # (n_z, n_z)
+    # the two transposed, contiguous (a matrix product with a transposed view
+    # is several times slower)
+    modes_t: np.ndarray
+    modes_inv_t: np.ndarray
 
     @property
     def n_z(self) -> int:
         return int(self.xi.size)
 
 
-_TRANSPOSES: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-
-
-def _transposes(grid: LayerGrid) -> tuple[np.ndarray, np.ndarray]:
-    """``modes_inv.T`` and ``modes.T`` as contiguous arrays (a matrix product
-    with a transposed view is several times slower)."""
-    key = id(grid)
-    if key not in _TRANSPOSES:
-        _TRANSPOSES[key] = (
-            np.ascontiguousarray(grid.modes_inv.T),
-            np.ascontiguousarray(grid.modes.T),
-        )
-    return _TRANSPOSES[key]
-
-
-@lru_cache(maxsize=8)
-def layer_grid(n_z: int = 16) -> LayerGrid:
+@lru_cache(maxsize=2048)
+def layer_grid(n_z: int = 16, biot: float = math.inf) -> LayerGrid:
     """Gauss layers and their conduction operator.
 
     ``dθ_k/dFo = (1/w_k)·[(θ_{k+1} − θ_k)/(ξ_{k+1} − ξ_k) − (θ_k − θ_{k−1})/(ξ_k − ξ_{k−1})]``
     with no flux at the centre and ``θ = 0`` at the wall (``ξ = ½``);
-    ``Fo = α·t/h²``. The operator is similar to a symmetric matrix, so its
-    eigenvalues are real and negative.
+    ``Fo = α·t/h²``. With a finite ``biot = h_c·h/k`` the outermost layer
+    reaches the mould through its own half and the contact in series:
+    ``−θ_last / (½ − ξ_last + 1/Bi)`` (``biot = 0``: an insulated wall). The
+    operator is similar to a symmetric matrix, so its eigenvalues are real and
+    not positive. ``xi`` and ``wt`` do not depend on ``biot``.
     """
+    if not biot >= 0.0:
+        raise ValueError(f"biot must be >= 0 (got {biot})")
     x, w = np.polynomial.legendre.leggauss(int(n_z))
     xi = 0.25 * (x + 1.0)
     wt = 0.25 * w
@@ -89,21 +88,102 @@ def layer_grid(n_z: int = 16) -> LayerGrid:
         stiff[k + 1, k + 1] -= c
         stiff[k, k + 1] += c
         stiff[k + 1, k] += c
-    stiff[-1, -1] -= 1.0 / (0.5 - xi[-1])
+    if biot > 0.0:
+        stiff[-1, -1] -= 1.0 / ((0.5 - xi[-1]) + (0.0 if math.isinf(biot) else 1.0 / biot))
     r = 1.0 / np.sqrt(wt)
     lam, q = np.linalg.eigh(stiff * r[:, None] * r[None, :])
+    lam = np.minimum(lam, 0.0)  # (an insulated wall has one mode at zero, to round-off)
+    modes, modes_inv = q * r[:, None], q.T / r[None, :]
     for a in (xi, wt, lam):
         a.setflags(write=False)
-    return LayerGrid(xi=xi, wt=wt, decay=lam, modes=q * r[:, None], modes_inv=q.T / r[None, :])
+    return LayerGrid(
+        xi=xi,
+        wt=wt,
+        decay=lam,
+        modes=modes,
+        modes_inv=modes_inv,
+        modes_t=np.ascontiguousarray(modes.T),
+        modes_inv_t=np.ascontiguousarray(modes_inv.T),
+    )
 
 
-def conduct(theta: np.ndarray, fourier_step: np.ndarray, grid: LayerGrid) -> np.ndarray:
+#: Biot numbers are grouped in bins this wide (in ``ln Bi``): cells of one bin
+#: share one diagonalised operator. The bin's centre is within 1 % of every
+#: Biot number in it, which moves a slab's cooling time by under 1 %.
+_BIOT_BIN = math.log1p(0.02)
+
+
+@dataclass(frozen=True)
+class WallContact:
+    """The cells' contact with the mould, grouped by Biot number.
+
+    ``groups`` is ``(cells, grid)`` pairs: the rows that share the conduction
+    operator ``grid`` (:func:`layer_grid` at the bin's Biot number). Every cell
+    is in exactly one group.
+    """
+
+    n: int
+    groups: tuple[tuple[np.ndarray, LayerGrid], ...]
+
+
+def wall_contact(biot: np.ndarray, n_z: int = 16) -> WallContact:
+    """Group the cells by their Biot number ``h_c·h/k`` (``(n,)``, ≥ 0;
+    ``inf``: the wall at the mold temperature, 0: insulated)."""
+    bi = np.asarray(biot, dtype=float).ravel()
+    if not np.all(bi >= 0.0):
+        raise ValueError("biot must be >= 0")
+    key = np.full(bi.shape, np.iinfo(np.int64).max, dtype=np.int64)  # inf
+    finite = np.isfinite(bi) & (bi > 0.0)
+    key[finite] = np.round(np.log(bi[finite]) / _BIOT_BIN).astype(np.int64)
+    key[bi == 0.0] = np.iinfo(np.int64).min
+    groups = []
+    for k in np.unique(key):
+        if k == np.iinfo(np.int64).max:
+            value = math.inf
+        elif k == np.iinfo(np.int64).min:
+            value = 0.0
+        else:
+            value = math.exp(float(k) * _BIOT_BIN)
+        groups.append((np.flatnonzero(key == k), layer_grid(int(n_z), value)))
+    return WallContact(n=int(bi.size), groups=tuple(groups))
+
+
+def conduct(
+    theta: np.ndarray,
+    fourier_step: np.ndarray,
+    grid: LayerGrid,
+    wall: WallContact | None = None,
+) -> np.ndarray:
     """``theta`` after conduction to the walls over ``fourier_step = α·dt/h²``.
 
     ``theta`` is ``(n, n_z)``, ``fourier_step`` ``(n,)``. Exact in time for the
-    layered slab, whatever the step.
+    layered slab, whatever the step. ``wall`` (:func:`wall_contact`) puts a
+    contact resistance between the melt and the mould; without it the wall is
+    at the mold temperature.
     """
-    return conduct_by(theta, decay_factors(fourier_step, grid), grid)
+    return _conduct_parts(theta, _decay_parts(fourier_step, grid, wall))
+
+
+def _decay_parts(fourier_step: np.ndarray, grid: LayerGrid, wall: WallContact | None) -> list:
+    """``(cells, grid, factors)`` per group of cells that share an operator
+    (``cells`` ``None``: all of them)."""
+    fo = np.asarray(fourier_step, dtype=float)
+    if wall is None:
+        return [(None, grid, decay_factors(fo, grid))]
+    if fo.shape != (wall.n,):
+        raise ValueError(f"fourier_step must be ({wall.n},) for this wall, got {fo.shape}")
+    if len(wall.groups) == 1:
+        return [(None, wall.groups[0][1], decay_factors(fo, wall.groups[0][1]))]
+    return [(cells, g, decay_factors(fo[cells], g)) for cells, g in wall.groups]
+
+
+def _conduct_parts(theta: np.ndarray, parts: list) -> np.ndarray:
+    if len(parts) == 1 and parts[0][0] is None:
+        return conduct_by(theta, parts[0][2], parts[0][1])
+    out = np.empty_like(theta)
+    for cells, g, factors in parts:
+        out[cells] = conduct_by(theta[cells], factors, g)
+    return out
 
 
 def decay_factors(fourier_step: np.ndarray, grid: LayerGrid) -> np.ndarray:
@@ -114,7 +194,7 @@ def decay_factors(fourier_step: np.ndarray, grid: LayerGrid) -> np.ndarray:
 
 def conduct_by(theta: np.ndarray, factors: np.ndarray, grid: LayerGrid) -> np.ndarray:
     """:func:`conduct` with the factors of :func:`decay_factors` given."""
-    out = ((theta @ _transposes(grid)[0]) * factors) @ _transposes(grid)[1]
+    out = ((theta @ grid.modes_inv_t) * factors) @ grid.modes_t
     # the exact operator keeps 0 ≤ θ ≤ 1 up to round-off
     return np.clip(out, 0.0, None)
 
@@ -238,6 +318,7 @@ def carry(
     max_courant: float = 0.1,
     max_fourier: float = 5e-5,
     max_substeps: int = 400,
+    wall: WallContact | None = None,
 ) -> tuple[np.ndarray, int]:
     """Conduction (:func:`conduct`) and the flow's transport (:func:`advect`)
     over one step, split into substeps; returns ``(theta, substeps)``.
@@ -256,7 +337,8 @@ def carry(
     (a filling cell mixes what comes in anyway). ``fourier_step`` is
     ``α·dt/h²`` per cell for the whole step; ``held`` is what the cells hold
     before it, and grows by the step's net inflow as the substeps go.
-    Conduction acts where a cell holds melt.
+    Conduction acts where a cell holds melt; ``wall`` is its contact with the
+    mould (:func:`conduct`).
     """
     n = theta.shape[0]
     moved = np.asarray(moved_a_to_b, dtype=float)
@@ -284,11 +366,11 @@ def carry(
     )
     worst = float(np.max(need)) if need.size else 1.0
     m = int(min(max(math.ceil(worst), 1), max_substeps))
-    factors = decay_factors(fo_step / m, grid)
+    parts = _decay_parts(fo_step / m, grid, wall)
     th = theta
     h_now = held.copy()
     for _ in range(m):
-        th = np.where((h_now > 0.0)[:, None], conduct_by(th, factors, grid), th)
+        th = np.where((h_now > 0.0)[:, None], _conduct_parts(th, parts), th)
         th = advect(th, shares, h_now, face_a, face_b, moved / m, filling, grid, source=src / m)
         h_now = np.maximum(h_now + net / m, 0.0)
     return th, m

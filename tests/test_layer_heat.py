@@ -7,11 +7,13 @@ import pytest
 
 from core.layer_heat import (
     advect,
+    carry,
     conduct,
     face_dissipation,
     flow_shares,
     layer_grid,
     shear_heating,
+    wall_contact,
 )
 
 
@@ -246,3 +248,80 @@ def test_a_step_with_no_flow_but_the_gate_keeps_float_profiles():
     )  # fmt: skip
     assert out.dtype == float
     assert out[0, 0] > 0.5 and np.allclose(out[1:], 0.5)
+
+
+# ----- contact with the mould (a heat transfer coefficient at the wall) -----
+
+
+def _robin_slab(biot: float, fourier: float, xi: np.ndarray) -> np.ndarray:
+    """Series solution of a slab from θ = 1 that loses heat through ``h_c`` on
+    both faces: ``Bi = h_c·h/k`` and ``Fo = α·t/h²`` on the full thickness."""
+    from scipy.optimize import brentq
+
+    bi_half, fo_half = 0.5 * biot, 4.0 * fourier
+    roots = np.array(
+        [
+            brentq(
+                lambda z: z * np.tan(z) - bi_half, m * np.pi + 1e-12, m * np.pi + np.pi / 2 - 1e-12
+            )
+            for m in range(80)
+        ]
+    )
+    amp = 4.0 * np.sin(roots) / (2.0 * roots + np.sin(2.0 * roots))
+    return (amp[:, None] * np.cos(np.outer(roots, xi / 0.5)) * np.exp(-(roots**2) * fo_half)[:, None]).sum(0)  # fmt: skip
+
+
+@pytest.mark.parametrize("biot", [2.0, 10.0, 50.0, 500.0])
+def test_conduction_through_a_contact_matches_the_series(biot):
+    g = layer_grid(16)
+    wall = wall_contact(np.array([biot]), 16)
+    for fo in (0.01, 0.05, 0.2):
+        got = conduct(np.ones((1, 16)), np.array([fo]), g, wall)[0]
+        assert np.max(np.abs(got - _robin_slab(biot, fo, g.xi))) < 5e-3
+
+
+def test_a_perfect_contact_is_the_wall_at_the_mold_temperature():
+    g = layer_grid(16)
+    fo = np.array([0.01, 0.05, 0.2])
+    start = np.ones((3, 16))
+    assert np.array_equal(
+        conduct(start, fo, g), conduct(start, fo, g, wall_contact(np.full(3, np.inf), 16))
+    )
+    # ... and an insulated wall keeps the heat
+    kept = conduct(start, fo, g, wall_contact(np.zeros(3), 16))
+    assert np.allclose(kept, 1.0, atol=1e-9)
+
+
+def test_a_poorer_contact_cools_slower_and_cells_keep_their_own():
+    g = layer_grid(16)
+    biot = np.array([100.0, 5.0, np.inf, 5.0, 100.0, 25.0])
+    wall = wall_contact(biot, 16)
+    assert sorted(int(i) for cells, _ in wall.groups for i in cells) == list(range(6))
+    fo = np.full(6, 0.05)
+    got = conduct(np.ones((6, 16)), fo, g, wall)
+    mean = got @ g.wt / 0.5
+    assert mean[1] > mean[5] > mean[0] > mean[2]
+    assert np.array_equal(got[1], got[3]) and np.array_equal(got[0], got[4])
+    # each row is what the cell gives alone
+    for i in range(6):
+        alone = conduct(np.ones((1, 16)), fo[:1], g, wall_contact(biot[i : i + 1], 16))[0]
+        assert np.allclose(got[i], alone, atol=1e-12)
+    with pytest.raises(ValueError, match="biot must be >= 0"):
+        wall_contact(np.array([-1.0]), 16)
+    with pytest.raises(ValueError, match="fourier_step must be"):
+        conduct(np.ones((2, 16)), np.full(2, 0.01), g, wall)
+
+
+def test_carry_conducts_through_the_contact():
+    # nothing flows: carry is conduction alone, whatever the substeps
+    g = layer_grid(16)
+    biot = np.array([8.0, 40.0, 40.0])
+    wall = wall_contact(biot, 16)
+    theta = np.ones((3, 16))
+    fa, fb = np.array([0, 1]), np.array([1, 2])
+    fo = np.array([0.03, 0.03, 0.06])
+    got, _ = carry(
+        theta, np.full((3, 16), 1 / 16), np.ones(3), fa, fb, np.zeros(2),
+        np.zeros(3, dtype=bool), fo, g, wall=wall,
+    )  # fmt: skip
+    assert np.allclose(got, conduct(theta, fo, g, wall), atol=1e-12)

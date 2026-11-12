@@ -4,7 +4,7 @@
 [mold-flow-fangate](../mold-flow-fangate) v0.7.3 を起点に、**この図面専用の別リポ**として立ち上げた（fangate 側は触らない）。
 顧客名は書かない（public リポ）。図面 PDF はリポに入れない。
 
-## 現状（2026-09-14、v0.15.0 まで追記）
+## 現状（2026-09-14、v0.16.0 まで追記）
 - 形状仕様は `docs/spec.md`（図面のベクタから実寸で読んだ寸法と、読み取りの根拠）
 - fangate の形状非依存モジュールは `core/` に移植済み（v0.1.0）。`geometry.py` は `Geometry` dataclass と `build_demo_geometry` のみ
 - builder は `core/fan_runner.py`（`FanRunnerPlateConfig` / `build_fan_runner_plate_geometry`、v0.2.0）。既定値が図面。
@@ -107,9 +107,15 @@
   - 2 mm 以下の格子で使う（4 mm・1 mm は軸に対して左右対称に切れない。4 mm だと流れの集まり方が片側に寄る）
   - 薄い首（入口 1 mm のファン、2 mm のタブ）は、保圧の流れが熱を運んで開いたままになり、ゲートの形による縮みの差が小さく出る。従来の見積りは逆に大きく出る。試作の重量と未照合
   - 計算時間は 2 mm 格子の 12.3 型で充填 4〜6 分・保圧 4〜8 分（到達時刻から読む方の数倍）
+  - **金型との熱伝達係数（v0.16.0）**: 樹脂の表面と金型の間に熱伝達係数を置く。充填・保圧・壁から離れたあと（保圧中に `u < 0` になった、一度は満ちたマス）の 3 つ。
+    画面の既定は 5000／2500／1250 W/(m²·K)（Moldflow の既定と同じ。**ユーザーの決定 2026-11-12: Moldflow と同じにする**）、key `wall_contact_model`（`htc`｜`ideal`）・`htc_fill`・`htc_pack`・`htc_detached`。
+    ライブラリの既定は `None`（表面＝金型温度、v0.15 までの扱い）: `MultilayerHeleShawSolver(mold_htc_fill_W_m2K=…)`、`solve_packing(htc_packing_W_m2K=…, htc_detached_W_m2K=…)`。
+    中身は `layer_heat.layer_grid(n_z, biot)`（壁の層に接触の抵抗 1/Bi を直列に足す）と `wall_contact`（マスをビオ数 2 % 刻みの組にまとめ、組ごとに固有分解を共有）。数字は CHANGELOG [0.16.0]
 - バリ注意（v0.15.0）: `core/flash.py`。保圧の結果の `molten_peak_pressure_Pa`（厚さの中心が溶けている間の最大の圧力）を、輪郭のマス（PL とみなす）で製品とランナ別に順位付けし、
   型を開く力と機械の型締力（`machine_clamp_kN`、既定 4,413 kN）を並べる。状態は `mfs_flash_path` / `mfs_flash_info`、UI テストは `tests/test_flash_ui.py`。
   到達時刻から読む温度では薄い額縁が固まった扱いで製品の輪郭が 0 と出るので、画面に注意を出す。**ユーザーの決定（2026-11-12）: 温度を刻みごとに解く改造と一緒に出す**
+  - バリの目安の圧力（v0.16.0）: 保圧の欄の `flash_threshold_mpa`、**既定は空欄**（`flash_risk(threshold_Pa=None)`）。入れると、その圧力以上の輪郭に紫の枠が付き、長さが出る。
+    **ユーザーの決定（2026-11-12）: 数字は作らず、試作のバリの位置から決める**（何 MPa でバリが出るかは型のすき間とたわみで決まる）
 - 分かっている不具合: 層別・時間で追う・剪断発熱 OFF・4 mm 格子で `the gate cells have no open face to the melt`（issue #21）
 
 ## fangate から持ち込まなかったもの

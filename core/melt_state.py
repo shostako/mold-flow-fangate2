@@ -24,7 +24,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from .layer_heat import carry, face_dissipation, flow_shares, layer_grid, shear_heating
+from .layer_heat import (
+    carry,
+    face_dissipation,
+    flow_shares,
+    layer_grid,
+    shear_heating,
+    wall_contact,
+)
 from .materials import Material
 from .packing_solve import _LN_S_GRID, _cross_table
 
@@ -35,6 +42,8 @@ class MeltState:
     ``theta`` is ``(n, n_z)``: ``(T − T_mold)/(T_melt − T_mold)`` on the half
     thickness, centre → wall. ``flux_m2_s`` is the flow each cell carries per
     unit width. Layers at or below ``solid_fraction`` do not flow.
+    ``wall_htc_W_m2K`` is the heat transfer coefficient between the melt and
+    the mould; ``None`` puts the melt's surface at the mold temperature.
     """
 
     def __init__(
@@ -48,6 +57,7 @@ class MeltState:
         solid_fraction: float = 0.3,
         n_z: int = 16,
         shear_heating_enabled: bool = True,
+        wall_htc_W_m2K: float | None = None,
     ) -> None:
         self.h = np.asarray(thickness_m, dtype=float)
         self.n = int(self.h.size)
@@ -58,6 +68,14 @@ class MeltState:
         self.solid_fraction = float(solid_fraction)
         self.heating = bool(shear_heating_enabled)
         self.grid = layer_grid(int(n_z))
+        if wall_htc_W_m2K is None:
+            self.biot = None
+            self.wall = None
+        else:
+            if not float(wall_htc_W_m2K) > 0.0:
+                raise ValueError(f"wall_htc_W_m2K must be > 0 (got {wall_htc_W_m2K})")
+            self.biot = float(wall_htc_W_m2K) * self.h / float(material.thermal_conductivity_W_mK)
+            self.wall = wall_contact(self.biot, int(n_z))
         g = self.grid
         self.fourier_rate = float(material.thermal_diffusivity_m2_s) / self.h**2
         self.heat_capacity = float(material.density_melt_kgm3) * float(material.specific_heat_J_kgK)
@@ -75,6 +93,15 @@ class MeltState:
         self.heated_J = 0.0
         self.last_substeps = 1  # transport substeps the last step took (layer_heat.carry)
         self.max_substeps_seen = 1
+
+    def surface_theta(self) -> np.ndarray:
+        """``θ`` of the melt's surface, ``(n,)``: 0 with the wall at the mold
+        temperature; with a contact, what the outermost layer's flux to the
+        mould leaves across the contact resistance."""
+        if self.biot is None:
+            return np.zeros(self.n)
+        contact = 1.0 / self.biot
+        return self.theta[:, -1] * contact / ((0.5 - self.grid.xi[-1]) + contact)
 
     # ------------------------------------------------------------------ rheology
     def zero_shear_inverse_viscosity(self, theta: np.ndarray) -> np.ndarray:
@@ -184,6 +211,7 @@ class MeltState:
             self.fourier_rate * dt_s,
             g,
             source=gate_in_m3,
+            wall=self.wall,
         )
         self.max_substeps_seen = max(self.max_substeps_seen, self.last_substeps)
         if self.heating and pressure_drop_Pa is not None:

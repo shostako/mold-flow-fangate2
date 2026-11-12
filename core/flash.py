@@ -11,7 +11,9 @@ not enter the gap.
 
 What is not here: the gap itself (vent depth, wear, the mould's deflection
 under the clamp), so the map ranks the places and gives their pressure; a
-pressure at which a given mould flashes is the user's to judge. The clamp
+pressure at which a given mould flashes is the user's to judge. Once a trial
+has shown where the flash starts, that pressure can be given as a threshold:
+the outline above it is marked and its length reported. The clamp
 check compares the force that opens the mould (∫ p dA, from the solve) with
 the machine's clamp force.
 """
@@ -48,6 +50,13 @@ class FlashRisk:
     clamp_peak_N: float = 0.0  # the most the cavity pushed the mould open
     clamp_peak_time_s: float = 0.0
     machine_clamp_N: float | None = None
+    # the user's pressure above which this mould is taken to flash (None: not given)
+    threshold_Pa: float | None = None
+    over_threshold: np.ndarray | None = None  # bool map: outline cells at or above it
+    # outline length at or above the threshold (cells × cell size: a staircase
+    # outline counts longer than the true edge)
+    over_length_product_mm: float = 0.0
+    over_length_runner_mm: float = 0.0
 
 
 def outline_cells(mask: np.ndarray) -> np.ndarray:
@@ -66,6 +75,7 @@ def flash_risk(
     n_spots: int = 5,
     min_gap_mm: float = 20.0,
     machine_clamp_N: float | None = None,
+    threshold_Pa: float | None = None,
 ) -> FlashRisk:
     """Rank the outline by the pressure it held while still molten.
 
@@ -74,9 +84,12 @@ def flash_risk(
     at least ``min_gap_mm`` from the ones before, so that one long stretch of
     high pressure does not fill the list. The product's outline and the
     runner's (``Geometry.product_mask``) are ranked apart, ``n_spots`` each.
+    ``threshold_Pa`` marks the outline that held at least that pressure.
     """
     if n_spots < 0 or min_gap_mm < 0.0:
         raise ValueError("n_spots and min_gap_mm must be >= 0")
+    if threshold_Pa is not None and not float(threshold_Pa) > 0.0:
+        raise ValueError(f"threshold_Pa must be > 0 (got {threshold_Pa})")
     mask = np.asarray(geometry.mask, dtype=bool)
     p_map = np.asarray(solve.molten_peak_pressure_Pa, dtype=float)
     t_map = np.asarray(solve.molten_peak_time_s, dtype=float)
@@ -117,6 +130,12 @@ def flash_risk(
     clamp = np.asarray(solve.clamp_force_N, dtype=float)
     times = np.asarray(solve.times_s, dtype=float)
     j = int(np.argmax(clamp)) if clamp.size else 0
+    over = None
+    over_product = over_runner = 0.0
+    if threshold_Pa is not None:
+        over = edge & (p_map >= float(threshold_Pa))
+        over_product = float(np.sum(over & product)) * dx
+        over_runner = float(np.sum(over & ~product)) * dx
     return FlashRisk(
         edge=edge,
         pressure_Pa=on_edge,
@@ -125,4 +144,8 @@ def flash_risk(
         clamp_peak_N=float(clamp[j]) if clamp.size else 0.0,
         clamp_peak_time_s=float(times[j]) if times.size else 0.0,
         machine_clamp_N=None if machine_clamp_N is None else float(machine_clamp_N),
+        threshold_Pa=None if threshold_Pa is None else float(threshold_Pa),
+        over_threshold=over,
+        over_length_product_mm=over_product,
+        over_length_runner_mm=over_runner,
     )
