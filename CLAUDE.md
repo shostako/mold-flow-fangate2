@@ -4,7 +4,7 @@
 [mold-flow-fangate](../mold-flow-fangate) v0.7.3 を起点に、**この図面専用の別リポ**として立ち上げた（fangate 側は触らない）。
 顧客名は書かない（public リポ）。図面 PDF はリポに入れない。
 
-## 現状（2026-09-14、v0.16.1 まで追記）
+## 現状（2026-09-14、v0.17.0 まで追記）
 - 形状仕様は `docs/spec.md`（図面のベクタから実寸で読んだ寸法と、読み取りの根拠）
 - fangate の形状非依存モジュールは `core/` に移植済み（v0.1.0）。`geometry.py` は `Geometry` dataclass と `build_demo_geometry` のみ
 - builder は `core/fan_runner.py`（`FanRunnerPlateConfig` / `build_fan_runner_plate_geometry`、v0.2.0）。既定値が図面。
@@ -115,8 +115,10 @@
   型を開く力と機械の型締力（`machine_clamp_kN`、既定 4,413 kN）を並べる。状態は `mfs_flash_path` / `mfs_flash_info`、UI テストは `tests/test_flash_ui.py`。
   到達時刻から読む温度では薄い額縁が固まった扱いで製品の輪郭が 0 と出るので、画面に注意を出す。**ユーザーの決定（2026-11-12）: 温度を刻みごとに解く改造と一緒に出す**
   - **充填が止まった理由（v0.16.1）**: メタデータ `march_stall_cause` が `pressure_limit`（上限で流量が落ちて止まった）か `frozen_path`（上限で流量が落ちた刻みが無いまま、残りへ入る道が固まった）。結果の先頭に出す（`app._stall_note`）。
-    12.3 型は `frozen_path` で 99.89〜99.97 % で止まる。残りは 1 mm の額縁の幅 1 マスの線（先に止まって固まった先端と後から来た先端の合わせ目）で、欠けの予測ではない。
-    先端のマスの流れやすさを、そのマスに先に入って固まった樹脂で決める作りの限界（上流側で決める直しは未着手、全結果が動く）。数字は CHANGELOG [0.16.1]
+    v0.16.1 の 12.3 型は `frozen_path` で 99.89〜99.97 % で止まった。残りは 1 mm の額縁の幅 1 マスの線（先に止まって固まった先端と後から来た先端の合わせ目）で、欠けの予測ではなかった。数字は CHANGELOG [0.16.1]
+  - **後から来た先端の流れ込み（v0.17.0）**: `march_fill(late_inflow=…)`。先端のマスの隣が、そのマスが樹脂を受け始めた（`t_first`）あとに満ちたとき、その面だけ、
+    先端のマスの流れやすさを `MeltState.inflow_conductance`（隣の樹脂の流量平均の温度を、このマスの肉厚に入れた値）と比べて大きい方にする。元からの送り手との面は従来どおりで、本物のショートは残る。
+    `MultilayerHeleShawSolver(late_front_inflow=True)` が既定、energy のときだけ効く。12.3 型は 2 mm・4 mm とも最後まで埋まり、保圧まで通した縮みと型を開く力はほぼ動かない。数字は CHANGELOG [0.17.0]
   - バリの目安の圧力（v0.16.0）: 保圧の欄の `flash_threshold_mpa`、**既定は空欄**（`flash_risk(threshold_Pa=None)`）。入れると、その圧力以上の輪郭に紫の枠が付き、長さが出る。
     **ユーザーの決定（2026-11-12）: 数字は作らず、試作のバリの位置から決める**（何 MPa でバリが出るかは型のすき間とたわみで決まる）
 - 分かっている不具合: 層別・時間で追う・剪断発熱 OFF・4 mm 格子で `the gate cells have no open face to the melt`（issue #21）

@@ -356,6 +356,13 @@ class MultilayerHeleShawSolver:
     #: energy: heat transfer coefficient between the melt and the mould during
     #: the fill [W/(m²·K)]. ``None``: the melt's surface is at the mold temperature.
     mold_htc_fill_W_m2K: float | None = field(default=None, kw_only=True)
+    #: energy: a front cell that began to fill from one side and is met by a
+    #: front from another takes that front's melt at the conductance of fresh
+    #: melt in it, not at that of the melt already there
+    #: (``transient_fill.march_fill(late_inflow=…)``). ``False``: the cell's own
+    #: conductance on every face (v0.16), which leaves a line of cells unfilled
+    #: where a front that stopped and froze is met by a later one.
+    late_front_inflow: bool = field(default=True, kw_only=True)
 
     # Internal helper, populated in __post_init__.
     _base: HeleShawSolver = field(init=False, repr=False)
@@ -525,6 +532,7 @@ class MultilayerHeleShawSolver:
                         tuple(self.thermal_snapshot_fractions),
                         self.injection_pressure_limit_Pa,
                         self.mold_htc_fill_W_m2K,
+                        self.late_front_inflow,
                     )
                 ),
             )
@@ -818,6 +826,7 @@ class MultilayerHeleShawSolver:
         h_flat = h_open.ravel()
         energy = self.thermal_coupling and self.thermal_model == "energy"
         on_step = None
+        late_inflow = None
 
         if energy:
             # The melt as a state on the cavity cells (core.melt_state): the layers'
@@ -855,6 +864,9 @@ class MultilayerHeleShawSolver:
                 rows = row[idx]
                 return np.maximum(melt.conductance(rows), S_trace[rows])
 
+            def late_inflow(front_idx: np.ndarray, feeder_idx: np.ndarray) -> np.ndarray:
+                return melt.inflow_conductance(row[front_idx], row[feeder_idx])
+
             def on_step(st: MarchStep) -> np.ndarray:
                 if not faces:
                     faces["a"], faces["b"] = row[st.face_a], row[st.face_b]
@@ -869,6 +881,11 @@ class MultilayerHeleShawSolver:
                     st.gate_in_m3[cav],
                     st.pressure_Pa[st.face_b] - st.pressure_Pa[st.face_a],
                     faces["along_x"],
+                    late=(
+                        None
+                        if st.late_faces is None
+                        else (st.late_faces, st.late_front_is_b, st.late_front_conductance)
+                    ),
                 )
                 if st.newly.size:
                     centre_at_arrival[row[st.newly]] = melt.theta[row[st.newly], 0]
@@ -919,6 +936,7 @@ class MultilayerHeleShawSolver:
             cfl=float(self.march_cfl),
             breakpoints_s=breakpoints,
             on_step=on_step,
+            late_inflow=late_inflow if energy and self.late_front_inflow else None,
             pressure_limit_Pa=self.injection_pressure_limit_Pa if energy else None,
         )
         if not res.complete and not res.stalled:
@@ -1188,6 +1206,9 @@ class MultilayerHeleShawSolver:
                         if self.mold_htc_fill_W_m2K is None or self.thermal_model != "energy"
                         else float(self.mold_htc_fill_W_m2K)
                     ),
+                    "late_front_inflow": bool(self.late_front_inflow)
+                    if self.thermal_model == "energy"
+                    else None,
                     "march_stalled": bool(st.get("march_stalled", False)),
                     "march_unreached_cells": int(np.sum(st["march_unreached"])),
                     "march_pressure_limited_steps": int(st["march_pressure_limited_steps"]),

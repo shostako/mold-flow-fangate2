@@ -174,6 +174,25 @@ class MeltState:
     def conductance(self, rows=None) -> np.ndarray:
         return self.flow_state(rows)[0]
 
+    def inflow_conductance(self, rows: np.ndarray, feeders: np.ndarray) -> np.ndarray:
+        """Conductance of cells ``rows`` for melt that comes in from ``feeders``.
+
+        The melt that enters a cell at the front spreads over the thickness
+        (fountain flow): every layer takes the flow-weighted mean temperature
+        of what the feeder passes on, as :func:`core.layer_heat.advect` gives a
+        filling cell. The cell's own thickness and the flow it carries apply.
+        Zero where the feeder passes nothing (solid through).
+        """
+        rows = np.asarray(rows, dtype=np.intp)
+        feeders = np.asarray(feeders, dtype=np.intp)
+        if rows.size == 0:
+            return np.zeros(0)
+        shares = flow_shares(self.flow_state(feeders)[2], self.grid)
+        flows = shares.sum(axis=1) > 0.0
+        mean = (shares * self.theta[feeders]).sum(axis=1)
+        theta_in = np.repeat(mean[:, None], self.grid.n_z, axis=1)
+        return np.where(flows, self.flow_state(rows, theta=theta_in)[0], 0.0)
+
     # ------------------------------------------------------------------ one step
     def advance(
         self,
@@ -186,6 +205,7 @@ class MeltState:
         gate_in_m3: np.ndarray,
         pressure_drop_Pa: np.ndarray | None,
         along_x: np.ndarray,
+        late: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
     ) -> None:
         """Take the state over one step of the fill.
 
@@ -195,6 +215,10 @@ class MeltState:
         into each cell, ``pressure_drop_Pa`` the drop ``p_b − p_a`` across each
         face that the delivery needed (for the viscous heating; ``None``
         leaves it out), ``along_x`` which faces join neighbours in ``x``.
+        ``late`` names the faces where the step gave a front cell another
+        conductance than its own (:meth:`inflow_conductance`): their indices,
+        whether the front cell is the ``b`` side, and that conductance -- the
+        heat the flow leaves on those faces is shared out with it.
         """
         g = self.grid
         s_before, _, inv_eta = self.flow_state()
@@ -215,9 +239,12 @@ class MeltState:
         )
         self.max_substeps_seen = max(self.max_substeps_seen, self.last_substeps)
         if self.heating and pressure_drop_Pa is not None:
-            heat = face_dissipation(
-                face_a, face_b, s_before[face_a], s_before[face_b], pressure_drop_Pa, dt_s, self.n
-            )
+            s_a, s_b = s_before[face_a], s_before[face_b]
+            if late is not None:
+                k, is_b, s_late = late
+                s_b[k[is_b]] = s_late[is_b]
+                s_a[k[~is_b]] = s_late[~is_b]
+            heat = face_dissipation(face_a, face_b, s_a, s_b, pressure_drop_Pa, dt_s, self.n)
             rise = shear_heating(heat, inv_eta, self.cell_m3, self.heat_capacity, self.span, g)
             th = th + rise
             self.dissipated_J += float(heat.sum())

@@ -109,6 +109,12 @@ class MarchStep:
     # moves a cell's surplus on (that one scales as 1/dt); zero outside the full cells
     pressure_Pa: np.ndarray
     volume_injected_m3: float  # delivered by the end of the step
+    #: faces where a full cell fed a front cell that had begun to fill before it
+    #: (``late_inflow``): their indices into ``face_a``/``face_b``, whether the
+    #: front cell is the ``b`` side, and the conductance the front cell was given
+    late_faces: np.ndarray | None = None
+    late_front_is_b: np.ndarray | None = None
+    late_front_conductance: np.ndarray | None = None
 
 
 def _faces(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -134,6 +140,7 @@ def march_fill(
     dt_max_s: float,
     cfl: float = 1.0,
     breakpoints_s: tuple[float, ...] = (),
+    late_inflow: Callable[[np.ndarray, np.ndarray], np.ndarray] | None = None,
     max_steps: int = 200_000,
     on_step: Callable[[MarchStep], np.ndarray | None] | None = None,
     pressure_limit_Pa: float | None = None,
@@ -166,6 +173,18 @@ def march_fill(
         cells take it, instead of keeping the value they got when the melt
         reached them. This is how a caller that carries the temperature as a
         state lets the cells behind the front go on cooling.
+    late_inflow
+        ``late_inflow(front_idx, feeder_idx)`` → the conductance a front cell
+        offers to the melt of that feeder. A front cell's own conductance is
+        that of the melt already in it: right for the neighbour that melt came
+        from, which has to push through it. A neighbour that became full only
+        *after* the front cell had begun to fill is another front, arriving at
+        the cell's empty side: it meets the void, not the melt already there.
+        On those faces the front cell takes the larger of its own conductance
+        and this one. Without it, a front that stopped and froze shuts its
+        cell to a front that arrives later, and a line of cells is left
+        unfilled between the two. ``None``: the cell's own conductance on
+        every face.
     pressure_limit_Pa
         The most the machine puts on the gate. While the programmed rate would
         need more, the gate is held at the limit and the melt comes in at
@@ -204,6 +223,7 @@ def march_fill(
     t = float(t_start_s)
     t_arr = np.full(n, np.nan)
     t_arr[g] = t
+    t_first = np.full(n, np.nan)  # the start of the step a cell took its first melt in
     S = np.zeros(n)
     S[g] = conductance(g, t_arr[g])
     p = np.zeros(n)
@@ -283,6 +303,22 @@ def march_fill(
         uid[u] = np.arange(u.size)
 
         Sa, Sb = S[fa], S[fb]
+        late_k = late_b = late_S = None
+        if late_inflow is not None:
+            # a full cell feeding a front cell that began to fill before it was full
+            # (NaN -- a front cell with no melt yet -- compares false)
+            with np.errstate(invalid="ignore"):
+                a_late = full[fa] & front[fb] & (t_arr[fa] > t_first[fb])
+                b_late = full[fb] & front[fa] & (t_arr[fb] > t_first[fa])
+            if a_late.any() or b_late.any():
+                ka, kb = np.flatnonzero(a_late), np.flatnonzero(b_late)
+                late_k = np.concatenate([ka, kb])
+                late_b = np.concatenate([np.ones(ka.size, bool), np.zeros(kb.size, bool)])
+                fr_c = np.concatenate([fb[ka], fa[kb]])
+                fd_c = np.concatenate([fa[ka], fb[kb]])
+                late_S = np.maximum(S[fr_c], np.asarray(late_inflow(fr_c, fd_c), dtype=float))
+                Sb[ka] = late_S[: ka.size]
+                Sa[kb] = late_S[ka.size :]
         tot = Sa + Sb
         Sf = np.where(tot > 0, 2.0 * Sa * Sb / np.where(tot > 0, tot, 1.0), 0.0)
         ua, ub = unk[fa], unk[fb]
@@ -387,6 +423,8 @@ def march_fill(
         V[u] = C[u]
         V[g] = C[g]
         V[fr] = V_old[fr] + dt * inflow[fr]
+        began = fr[(V_old[fr] <= 0.0) & (V[fr] > 0.0)]
+        t_first[began] = t
         newly = fr[V[fr] >= C[fr] * FULL_REL]
         if newly.size:
             rate = np.maximum(inflow[newly], 1e-300)
@@ -409,6 +447,9 @@ def march_fill(
                     gate_in_m3=gate_in,
                     pressure_Pa=(max(q_total, 0.0) / out1) * p1,
                     volume_injected_m3=v_next,
+                    late_faces=late_k,
+                    late_front_is_b=late_b,
+                    late_front_conductance=late_S,
                 )
             )
             if S_now is not None:
