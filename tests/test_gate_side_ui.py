@@ -261,3 +261,22 @@ def test_delayed_direct_gates_need_the_time_marched_fill_and_conventional_moldin
     at.button[0].click().run()
     assert not at.exception
     assert at.session_state["mfs_geom"].delayed_gates == []
+
+
+def test_the_two_phase_short_shot_is_skipped_with_a_delayed_gate():
+    """Its injection-phase times are rebuilt from the volume order, which knows
+    nothing of a valve that opens later (Codex P2 on PR #28)."""
+    at = _open_direct()
+    at.radio(key="fg_direct_open_mode").set_value("delay").run()
+    at.number_input(key="fg_direct_delay_s").set_value(0.2).run()
+    at.checkbox(key="two_phase_on").set_value(True).run()
+    at.button[0].click().run()
+    assert not at.exception
+    assert at.session_state["mfs_two_phase_result"] is None
+    assert "直接ゲートを遅らせて開く設定では解きません" in _texts(at)
+    assert len(at.session_state["mfs_result"].metadata["gate_events"]) == 1
+    # opening together, the short shot is solved as before
+    at.radio(key="fg_direct_open_mode").set_value("together").run()
+    at.button[0].click().run()
+    assert not at.exception
+    assert at.session_state["mfs_two_phase_result"] is not None

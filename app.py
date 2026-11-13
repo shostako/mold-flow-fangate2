@@ -2247,7 +2247,13 @@ if do_run:
         # 乗る。層別は固定点を計量 V/Q の時計（膨張なし）で解き直す。
         two_phase_result = None
         two_phase_skip_reason: str | None = None
-        if two_phase_on:
+        if two_phase_on and geom.delayed_gates:
+            # 射出相の時刻を体積の順から作り直すので、遅れて開くバルブを扱えない
+            two_phase_skip_reason = (
+                "直接ゲートを遅らせて開く設定では解きません（ゲートを同時に開く設定で解けます）。"
+            )
+            st.info(f"二相ショートショット解析: {two_phase_skip_reason}")
+        elif two_phase_on:
             try:
                 two_phase_result = solve_two_phase_short_shot(solver, shot_volume_cm3)
             except ValueError as e:

@@ -69,7 +69,7 @@
   `"delay"`（射出の開始から `direct_delay_s` 秒）/ `"arrival"`（樹脂が届いてから `direct_delay_s` 秒）。2 つ目からのゲート（`direct_points_mm` の順）が
   `Geometry.delayed_gates`（`core.transient_fill.DelayedGate`）に入る。`Geometry.gates` には全部のゲートが入ったままで、止めておくのは
   `march_fill(delayed_gates=…)` だけ（開く前はふつうのセル、開いたら同じゲート圧を共有、開く時刻で刻みを切る、時刻の決まったゲートが残っている間は
-  「止まった」にしない）。τ の解き方と射出圧縮成形では誤りにする（UI は射出圧縮成形のとき欄を出さない）。保圧は全部のゲートを開いて解く。
+  「止まった」にしない）。τ の解き方と射出圧縮成形では誤りにする（UI は射出圧縮成形のとき欄を出さない）。保圧は全部のゲートを開いて解く。二相ショートショットは解かない（理由を出して飛ばす）。
   記録は metadata の `delayed_gates` と `gate_events`、画面は `app._gate_open_note`
 - **成形方法（v0.18.0、既定は v0.19.0 から通常成形）**: サイドバーの先頭の `molding_method`（`"conventional"` 通常成形＝既定／`"icm"` 射出圧縮成形）。
   旧 `icm_on` のチェックは無い。「保圧」の欄は通常成形のときだけ出す（射出圧縮成形では `hold_on = False`、ユーザーの決定 2026-11-14）
