@@ -51,6 +51,11 @@ class Geometry:
     # instead of one symbol per rasterized Dirichlet cell (sim v0.38.1);
     # ``None`` falls back to the 4-connected components of the gate cells.
     valve_marker_mm: tuple[float, float, float] | None = None
+    # Gates that open after the injection has begun
+    # (``core.transient_fill.DelayedGate``). Their cells are in ``gates`` too:
+    # everything that reads ``gates`` sees every gate, and only the time-marched
+    # fill (``fill_method="march"``) holds these back until they open.
+    delayed_gates: list = field(default_factory=list)
 
     @property
     def shape(self) -> tuple[int, int]:

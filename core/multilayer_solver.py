@@ -56,7 +56,7 @@ short-shot detection, dedicated visualisers, and UI/CLI integration.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -513,6 +513,7 @@ class MultilayerHeleShawSolver:
                         self.geometry.mask.tobytes(),
                         float(self.geometry.cell_size_mm),
                         tuple(self.geometry.gates),
+                        tuple(self.geometry.delayed_gates),
                         self.material,
                         self.melt_temperature_K,
                         self.mold_temperature_K,
@@ -818,7 +819,16 @@ class MultilayerHeleShawSolver:
         if prof is not None:
             switches = np.cumsum(np.asarray(prof.stage_times_s(), dtype=float))[:-1]
             breakpoints = tuple(float(T_clock * ts / t_total) for ts in switches)
-        gates = [(iy, ix) for iy, ix in self.geometry.gates if mask[iy, ix]]
+        # the gates that open later (their cells are in geometry.gates too)
+        delayed = [
+            replace(dg, cells=tuple(c for c in dg.cells if mask[c]))
+            for dg in self.geometry.delayed_gates
+        ]
+        delayed = [dg for dg in delayed if dg.cells]
+        held_back = {c for dg in delayed for c in dg.cells}
+        gates = [
+            (iy, ix) for iy, ix in self.geometry.gates if mask[iy, ix] and (iy, ix) not in held_back
+        ]
         t_start = time_at_mm3(float(sum(cell_volume[g] for g in gates)))
         alpha = max(float(self.material.thermal_diffusivity_m2_s), 0.0)
         V_mms = float(self.injection_velocity_mms)
@@ -938,6 +948,7 @@ class MultilayerHeleShawSolver:
             on_step=on_step,
             late_inflow=late_inflow if energy and self.late_front_inflow else None,
             pressure_limit_Pa=self.injection_pressure_limit_Pa if energy else None,
+            delayed_gates=delayed,
         )
         if not res.complete and not res.stalled:
             raise RuntimeError(f"the march stopped after {res.n_steps} steps with cells unfilled")
@@ -1049,6 +1060,10 @@ class MultilayerHeleShawSolver:
             "march_gate_pressure_max_Pa": float(res.gate_pressure_max_Pa),
             "march_gate_pressure_free_max_Pa": float(res.gate_pressure_free_max_Pa),
             "march_stall_cause": stall_cause,
+            "gate_events": list(res.gate_events),
+            "delayed_gates": [
+                {"delay_s": float(dg.delay_s), "on_arrival": bool(dg.on_arrival)} for dg in delayed
+            ],
             "march_volume_fraction": float(res.volume_held_m3 / (V_open * 1e-9)),
             "energy_dissipated_J": float(melt.dissipated_J) if energy else 0.0,
             "energy_heated_J": float(melt.heated_J) if energy else 0.0,
@@ -1069,6 +1084,11 @@ class MultilayerHeleShawSolver:
         if not self.geometry.gates:
             raise ValueError("Geometry has no gates")
         check_gate_reachability(self.geometry)
+        if self.geometry.delayed_gates:
+            if self.fill_method != "march":
+                raise ValueError("gates that open later need fill_method='march'")
+            if self.compression_molding:
+                raise ValueError("gates that open later are not solved with compression molding")
 
         base = self._base
         eta_baseline = base._effective_viscosity()
@@ -1210,6 +1230,10 @@ class MultilayerHeleShawSolver:
                     if self.thermal_model == "energy"
                     else None,
                     "march_stalled": bool(st.get("march_stalled", False)),
+                    # the gates that opened later: which, when, and whether the
+                    # melt of the other gates had filled their cells by then
+                    "delayed_gates": [dict(d) for d in st.get("delayed_gates", [])],
+                    "gate_events": [dict(e) for e in st.get("gate_events", [])],
                     "march_unreached_cells": int(np.sum(st["march_unreached"])),
                     "march_pressure_limited_steps": int(st["march_pressure_limited_steps"]),
                     "march_gate_pressure_max_MPa": float(st["march_gate_pressure_max_Pa"]) / 1e6,

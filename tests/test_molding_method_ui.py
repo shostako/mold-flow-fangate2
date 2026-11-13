@@ -10,15 +10,33 @@ def _sliders(at) -> set[str]:
     return {str(s.label) for s in at.sidebar.slider}
 
 
-def test_injection_compression_is_the_default_and_shows_its_conditions():
+def _hold_keys(at) -> set[str]:
+    keys = {n.key for n in at.number_input} | {c.key for c in at.checkbox}
+    return {k for k in keys if k and (k.startswith("hold_") or k in HOLD_OTHER)}
+
+
+HOLD_OTHER = {"machine_clamp_kN", "flash_threshold_mpa"}
+HOLD_KEYS = {"hold_on", "hold_p_mpa", "hold_t_s", "hold_vp_pct", "hold_coarse"} | HOLD_OTHER
+
+
+def test_conventional_molding_is_the_default_with_the_holding_inputs_and_no_compression():
     at = _app()
     method = at.radio(key="molding_method")
-    assert method.value == "icm"
-    assert list(method.options) == ["射出圧縮成形", "通常成形"]
+    assert method.value == "conventional"
+    assert list(method.options) == ["通常成形", "射出圧縮成形"]
     # the method is chosen before the geometry
     first = at.sidebar.radio[0]
     assert first.key == "molding_method"
+    assert not {"圧縮ストローク [mm]", "圧縮位相の充填占有率"} & _sliders(at)
+    assert _hold_keys(at) == HOLD_KEYS
+
+
+def test_injection_compression_shows_its_conditions_and_hides_the_holding_inputs():
+    at = _app()
+    at.radio(key="molding_method").set_value("icm").run()
+    assert not at.exception
     assert {"圧縮ストローク [mm]", "圧縮位相の充填占有率"} <= _sliders(at)
+    assert _hold_keys(at) == set()
     at.checkbox(key="two_phase_on").set_value(False).run()
     at.button[0].click().run()
     assert not at.exception
@@ -41,3 +59,18 @@ def test_conventional_molding_hides_the_compression_conditions_and_solves_withou
     at.radio(key="molding_method").set_value("icm").run()
     assert {"圧縮ストローク [mm]", "圧縮位相の充填占有率"} <= _sliders(at)
     assert "形状パラメータが不正" not in _texts(at)
+
+
+def test_holding_switched_on_does_not_carry_into_injection_compression():
+    """ON under conventional molding, then ICM: the inputs go, the run solves no
+    holding and says why, and the record carries none."""
+    at = _app()
+    at.checkbox(key="two_phase_on").set_value(False)
+    at.checkbox(key="hold_on").set_value(True).run()
+    at.radio(key="molding_method").set_value("icm").run()
+    assert _hold_keys(at) == set()
+    at.button[0].click().run()
+    assert not at.exception
+    assert at.session_state["mfs_hold_info"] is None
+    assert "射出圧縮成形の解析では解きません" in at.session_state["mfs_hold_skip"]
+    assert at.session_state["mfs_settings"]["holding"]["enabled"] is False

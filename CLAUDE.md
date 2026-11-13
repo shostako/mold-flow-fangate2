@@ -4,7 +4,7 @@
 [mold-flow-fangate](../mold-flow-fangate) v0.7.3 を起点に、**この図面専用の別リポ**として立ち上げた（fangate 側は触らない）。
 顧客名は書かない（public リポ）。図面 PDF はリポに入れない。
 
-## 現状（2026-09-14、v0.18.0 まで追記）
+## 現状（2026-09-14、v0.19.0 まで追記）
 - 形状仕様は `docs/spec.md`（図面のベクタから実寸で読んだ寸法と、読み取りの根拠）
 - fangate の形状非依存モジュールは `core/` に移植済み（v0.1.0）。`geometry.py` は `Geometry` dataclass と `build_demo_geometry` のみ
 - builder は `core/fan_runner.py`（`FanRunnerPlateConfig` / `build_fan_runner_plate_geometry`、v0.2.0）。既定値が図面。
@@ -64,8 +64,15 @@
   `"overlap_tab"` 重ねタブ（帯はタブの幅だけ `lap_thk_mm`）、`"thick_tab"` 厚いタブ（帯は中央がタブの肉厚、その外は切り取り、角だけ額縁）、
   `"direct"` 直接ゲート（ランナ無し、`direct_layout` = center / corners4 / diagonal2、同時に開く）。ファン専用の変数はほかの形では検査しない（`_validate_gate_side`）。
   UI は「ゲート側の形」の 7 択で、形ごとの欄は `app._fan_gate_block` / `_tab_gate_block` / `_thick_tab_gate_block` / `_direct_gate_block`。
-  テストは `tests/test_geometry_gate_side.py` と `tests/test_gate_side_ui.py`。中央スロットルと、バルブを時間差で開く計算は入れていない（ユーザー: 後で）
-- **成形方法（v0.18.0）**: サイドバーの先頭の `molding_method`（`"icm"` 射出圧縮成形＝既定／`"conventional"` 通常成形）。旧 `icm_on` のチェックは無い
+  テストは `tests/test_geometry_gate_side.py` と `tests/test_gate_side_ui.py`。中央スロットルは入れていない（ユーザー: 後で）
+- **直接ゲートを遅らせて開く（v0.19.0、ユーザーの決定 2026-11-14: 既定は同時、設定で遅らせられる）**: `direct_open_mode` = `"together"`（既定）/
+  `"delay"`（射出の開始から `direct_delay_s` 秒）/ `"arrival"`（樹脂が届いてから `direct_delay_s` 秒）。2 つ目からのゲート（`direct_points_mm` の順）が
+  `Geometry.delayed_gates`（`core.transient_fill.DelayedGate`）に入る。`Geometry.gates` には全部のゲートが入ったままで、止めておくのは
+  `march_fill(delayed_gates=…)` だけ（開く前はふつうのセル、開いたら同じゲート圧を共有、開く時刻で刻みを切る、時刻の決まったゲートが残っている間は
+  「止まった」にしない）。τ の解き方と射出圧縮成形では誤りにする（UI は射出圧縮成形のとき欄を出さない）。保圧は全部のゲートを開いて解く。二相ショートショットは解かない（理由を出して飛ばす）。
+  記録は metadata の `delayed_gates` と `gate_events`、画面は `app._gate_open_note`
+- **成形方法（v0.18.0、既定は v0.19.0 から通常成形）**: サイドバーの先頭の `molding_method`（`"conventional"` 通常成形＝既定／`"icm"` 射出圧縮成形）。
+  旧 `icm_on` のチェックは無い。「保圧」の欄は通常成形のときだけ出す（射出圧縮成形では `hold_on = False`、ユーザーの決定 2026-11-14）
 - 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest -n auto --dist loadscope`（CI と同じ。直列だと 8 分、4 並列で 5 分半）
 - Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期

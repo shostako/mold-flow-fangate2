@@ -1138,3 +1138,28 @@ def test_the_map_title_does_not_round_a_short_shot_up_to_100_percent():
     assert _fraction_label(0.99999) == "99.9%"
     assert _fraction_label(0.5) == "50.0%"
     assert _fraction_label(float("nan")) == "nan%"  # the metadata fallback must not raise
+
+
+def test_gates_that_open_later_are_rejected():
+    """The injection phase's times are rebuilt from the volume order; a valve that
+    opens later is not in it (Codex P2 on PR #28)."""
+    geom = build_fan_runner_plate_geometry(
+        FanRunnerPlateConfig(
+            cell_size_mm=4.0,
+            runner_shape="direct",
+            direct_layout="diagonal2",
+            direct_open_mode="delay",
+            direct_delay_s=0.2,
+        )
+    )
+    assert geom.delayed_gates
+    solver = MultilayerHeleShawSolver(
+        geometry=geom,
+        material=MaterialDB()["PMMA"],
+        melt_temperature_K=533.15,
+        mold_temperature_K=333.15,
+        injection_velocity_mms=130.0,
+        fill_method="march",
+    )
+    with pytest.raises(ValueError, match="gates that open later"):
+        solve_two_phase_short_shot(solver, geom.volume_cm3())

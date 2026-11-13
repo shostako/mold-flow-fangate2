@@ -27,8 +27,11 @@ def _run(
 ):
     at.radio(key="wall_model").set_value("none")
     at.checkbox(key="two_phase_on").set_value(False)
-    at.radio(key="molding_method").set_value("icm" if icm else "conventional")
-    at.checkbox(key="hold_on").set_value(hold).run()
+    at.radio(key="molding_method").set_value("icm" if icm else "conventional").run()
+    if icm:  # the holding inputs are not shown with injection-compression
+        hold = False
+    else:
+        at.checkbox(key="hold_on").set_value(hold).run()
     if hold:
         at.number_input(key="hold_p_mpa").set_value(pressure)
         if vp is not None:  # None leaves the sidebar's default

@@ -22,6 +22,7 @@ import streamlit.components.v1 as components
 
 from core import (
     DIRECT_LAYOUTS,
+    DIRECT_OPEN_MODES,
     FAN_SHAPES,
     GATE2_DEFAULTS,
     GATE3_DEFAULTS,
@@ -531,7 +532,7 @@ PACK_SKIP_FRACTION = (
 
 
 # 保圧の計算を解かないときに結果ペインへ出す理由
-HOLD_SKIP_OFF = "サイドバー「保圧（通常成形）」で「保圧を解く」を ON にして解析すると出ます。"
+HOLD_SKIP_OFF = "サイドバー「保圧」で「保圧を解く」を ON にして解析すると出ます。"
 HOLD_SKIP_ICM = (
     "射出圧縮成形の解析では解きません（圧縮が保圧の役をし、キャビティの厚さも充填中に変わるため）。"
 )
@@ -564,7 +565,8 @@ _SHAPE_LABELS = {
     "direct": "直接ゲート（本体にバルブゲート）",
 }
 #: 成形方法: the sidebar's first choice
-MOLDING_METHODS = ("icm", "conventional")
+# the first one is the default: the trials run as conventional molding
+MOLDING_METHODS = ("conventional", "icm")
 _MOLDING_LABELS = {"icm": "射出圧縮成形", "conventional": "通常成形"}
 _RUNNER_EXPANDER = "ゲートブロック（ランナ、製品エッジ直結）"
 _GATE_EXPANDER = dict.fromkeys(RUNNER_SHAPES, _RUNNER_EXPANDER) | {
@@ -954,6 +956,17 @@ _DIRECT_LAYOUT_LABELS = {
 }
 
 
+_DIRECT_OPEN_LABELS = {
+    "together": "同時に開く（既定）",
+    "delay": "時間で遅らせる",
+    "arrival": "樹脂が届いてから開く",
+}
+_DIRECT_DELAY_LABELS = {
+    "delay": "射出の開始から開くまでの時間 [s]",
+    "arrival": "樹脂が届いてから開くまでの時間 [s]",
+}
+
+
 def _direct_gate_block(v: dict, num) -> None:
     """Direct gates: valve gates on the body, no runner."""
     v["direct_layout"] = st.radio(
@@ -978,9 +991,37 @@ def _direct_gate_block(v: dict, num) -> None:
             key="fg_direct_inset_mm",
             help=f"下限はゲートの半径 {inset_lo:.2f} mm（ゲートの穴が本体からはみ出さない）。",
         )
+    v["direct_open_mode"] = "together"
+    v["direct_delay_s"] = 0.0
+    if v["direct_layout"] != "center":
+        if st.session_state.get("molding_method", MOLDING_METHODS[0]) == "icm":
+            st.caption(
+                "射出圧縮成形では、ゲートは全部同時に開く（遅らせて開く計算は通常成形だけ）。"
+            )
+        else:
+            v["direct_open_mode"] = st.radio(
+                "2 つ目からのゲートを開く時",
+                DIRECT_OPEN_MODES,
+                format_func=_DIRECT_OPEN_LABELS.__getitem__,
+                key="fg_direct_open_mode",
+                help="1 つ目のゲートは左下の隅（ゲート側・左）で、射出の開始から開いている。"
+                "「時間で遅らせる」は、残りのゲートを射出の開始から決めた秒数のあとに一斉に開く。"
+                "「樹脂が届いてから開く」は、それぞれのゲートに先端が届いたあとに開く（届かなければ開かない）。"
+                "遅らせるときは、充填の解き方が「時間で追う」（既定）でないと解けない。",
+            )
+            if v["direct_open_mode"] != "together":
+                v["direct_delay_s"] = st.number_input(
+                    _DIRECT_DELAY_LABELS[v["direct_open_mode"]],
+                    min_value=0.0,
+                    max_value=120.0,
+                    value=0.0,
+                    step=0.1,
+                    format="%.2f",
+                    key="fg_direct_delay_s",
+                )
     st.caption(
-        "ゲートは全部、同じ圧力で同時に開く。射出率は合計で、ゲートの間の配分は流れやすさで決まる。"
-        "バルブを時間差で開く計算は入っていない。"
+        "開いているゲートは同じ圧力を共有する。射出率は合計で、ゲートの間の配分は流れやすさで決まる"
+        "（マニホールドの圧力損失は見ない）。保圧の計算は、全部のゲートを開いて解く。"
     )
 
 
@@ -1240,9 +1281,10 @@ with st.sidebar:
         format_func=_MOLDING_LABELS.__getitem__,
         key="molding_method",
         horizontal=True,
-        help="射出圧縮成形は、型を少し開いたまま充填して、あとから閉じる。圧縮されるのは内側の厚肉部（本体）だけで、"
-        "額縁・ゲート側の形・ランナは固定。条件は下の「射出圧縮成形 (ICM)」で決める。"
-        "通常成形は型を閉じたまま充填する。保圧の計算と、層の温度を刻みごとに解く充填は通常成形だけ。",
+        help="通常成形は型を閉じたまま充填する。保圧の計算と、層の温度を刻みごとに解く充填は通常成形だけで、"
+        "「保圧」の欄も通常成形のときだけ出る。"
+        "射出圧縮成形は、型を少し開いたまま充填して、あとから閉じる。圧縮されるのは内側の厚肉部（本体）だけで、"
+        "額縁・ゲート側の形・ランナは固定。条件は下の「射出圧縮成形 (ICM)」で決める。",
     )
     icm = molding_method == "icm"
     fan_inputs = _fan_runner_sidebar()
@@ -1622,88 +1664,96 @@ with st.sidebar:
         comp_stroke = None
         comp_frac = 0.0
 
-    with st.expander("保圧（通常成形）", expanded=False):
-        hold_on = st.checkbox(
-            "保圧を解く",
-            value=False,
-            key="hold_on",
-            help=(
-                "充填のあと、ゲートを保圧で保持して、圧力の時間変化と体積の縮みを解く"
-                "（圧縮性つき Hele-Shaw、2 領域 Tait の pvT）。通常成形のときだけ解く。"
-                "充填と同じ格子で解くので、解析時間が大きく延びる（数分〜数十分。形と VP 切替の値で変わる）。"
-            ),
-        )
-        hold_p_mpa = st.number_input(
-            "保圧 [MPa]",
-            min_value=0.0,
-            max_value=250.0,
-            value=60.0,
-            step=5.0,
-            key="hold_p_mpa",
-            disabled=not hold_on,
-            help="ゲートにかかる圧力。ノズルとホットランナーの圧力損失は入らない。",
-        )
-        hold_t_s = st.number_input(
-            "保圧時間 [s]",
-            min_value=0.0,
-            max_value=120.0,
-            value=10.0,
-            step=0.5,
-            key="hold_t_s",
-            disabled=not hold_on,
-            help="この時間のあとゲートを閉じる（バルブゲート。逆流はしない）。",
-        )
-        hold_vp_pct = st.number_input(
-            "VP 切替の充填率 [%]",
-            min_value=50.0,
-            max_value=100.0,
-            value=99.0,
-            step=1.0,
-            key="hold_vp_pct",
-            disabled=not hold_on,
-            help=(
-                "体積のこの割合まで射出率で埋め、そこから保圧に切り替える。残りは保圧で埋める"
-                "（機械が送る量は射出率が上限）。100 にすると、全部埋まったものとして保圧だけを見る。"
-                "薄い所が保圧で埋まるかの判定は、温度の扱いが粗いので当てにならない（式解説 §9）。"
-            ),
-        )
-        machine_clamp_kN = st.number_input(
-            "機械の型締力 [kN]",
-            min_value=100.0,
-            max_value=50000.0,
-            value=4413.0,
-            step=100.0,
-            key="machine_clamp_kN",
-            disabled=not hold_on,
-            help=(
-                "保圧の結果の「バリ注意」で、型を開く力のピークと比べる。既定はソディック 450t（4,413 kN）。"
-            ),
-        )
-        flash_threshold_mpa = st.number_input(
-            "バリの目安の圧力 [MPa]（空欄＝線を引かない）",
-            min_value=1.0,
-            max_value=400.0,
-            value=None,
-            step=5.0,
-            key="flash_threshold_mpa",
-            disabled=not hold_on,
-            placeholder="試作のバリの位置から決める",
-            help=(
-                "「バリ注意」の図で、輪郭が溶けている間に受けた最大の圧力がこの値以上の所に紫の枠を付け、長さを出す。"
-                "何 MPa でバリが出るかは型のすき間とたわみで決まるので、既定の値は持たない。"
-                "試作でバリが出始めた所を図の圧力と見比べて決める。"
-            ),
-        )
-        hold_coarse = st.checkbox(
-            "保圧を粗い格子で解く（検算用）",
-            value=False,
-            key="hold_coarse",
-            disabled=not hold_on,
-            help=(
-                "OFF（既定）は充填と同じ格子で解く。1 mm 格子では数十分かかることがある。"
-                "ON はマスを 2 万以下にまとめて解く（検算用。それでも数分〜数十分）。"
-            ),
-        )
+    if icm:
+        # 射出圧縮成形では保圧を解かないので、欄ごと出さない（値は使われない）
+        hold_on = False
+        hold_p_mpa, hold_t_s, hold_vp_pct = 60.0, 10.0, 99.0
+        machine_clamp_kN = 4413.0
+        flash_threshold_mpa = None
+        hold_coarse = False
+    else:
+        with st.expander("保圧", expanded=False):
+            hold_on = st.checkbox(
+                "保圧を解く",
+                value=False,
+                key="hold_on",
+                help=(
+                    "充填のあと、ゲートを保圧で保持して、圧力の時間変化と体積の縮みを解く"
+                    "（圧縮性つき Hele-Shaw、2 領域 Tait の pvT）。"
+                    "充填と同じ格子で解くので、解析時間が大きく延びる（数分〜数十分。形と VP 切替の値で変わる）。"
+                ),
+            )
+            hold_p_mpa = st.number_input(
+                "保圧 [MPa]",
+                min_value=0.0,
+                max_value=250.0,
+                value=60.0,
+                step=5.0,
+                key="hold_p_mpa",
+                disabled=not hold_on,
+                help="ゲートにかかる圧力。ノズルとホットランナーの圧力損失は入らない。",
+            )
+            hold_t_s = st.number_input(
+                "保圧時間 [s]",
+                min_value=0.0,
+                max_value=120.0,
+                value=10.0,
+                step=0.5,
+                key="hold_t_s",
+                disabled=not hold_on,
+                help="この時間のあとゲートを閉じる（バルブゲート。逆流はしない）。",
+            )
+            hold_vp_pct = st.number_input(
+                "VP 切替の充填率 [%]",
+                min_value=50.0,
+                max_value=100.0,
+                value=99.0,
+                step=1.0,
+                key="hold_vp_pct",
+                disabled=not hold_on,
+                help=(
+                    "体積のこの割合まで射出率で埋め、そこから保圧に切り替える。残りは保圧で埋める"
+                    "（機械が送る量は射出率が上限）。100 にすると、全部埋まったものとして保圧だけを見る。"
+                    "薄い所が保圧で埋まるかの判定は、温度の扱いが粗いので当てにならない（式解説 §9）。"
+                ),
+            )
+            machine_clamp_kN = st.number_input(
+                "機械の型締力 [kN]",
+                min_value=100.0,
+                max_value=50000.0,
+                value=4413.0,
+                step=100.0,
+                key="machine_clamp_kN",
+                disabled=not hold_on,
+                help=(
+                    "保圧の結果の「バリ注意」で、型を開く力のピークと比べる。既定はソディック 450t（4,413 kN）。"
+                ),
+            )
+            flash_threshold_mpa = st.number_input(
+                "バリの目安の圧力 [MPa]（空欄＝線を引かない）",
+                min_value=1.0,
+                max_value=400.0,
+                value=None,
+                step=5.0,
+                key="flash_threshold_mpa",
+                disabled=not hold_on,
+                placeholder="試作のバリの位置から決める",
+                help=(
+                    "「バリ注意」の図で、輪郭が溶けている間に受けた最大の圧力がこの値以上の所に紫の枠を付け、長さを出す。"
+                    "何 MPa でバリが出るかは型のすき間とたわみで決まるので、既定の値は持たない。"
+                    "試作でバリが出始めた所を図の圧力と見比べて決める。"
+                ),
+            )
+            hold_coarse = st.checkbox(
+                "保圧を粗い格子で解く（検算用）",
+                value=False,
+                key="hold_coarse",
+                disabled=not hold_on,
+                help=(
+                    "OFF（既定）は充填と同じ格子で解く。1 mm 格子では数十分かかることがある。"
+                    "ON はマスを 2 万以下にまとめて解く（検算用。それでも数分〜数十分）。"
+                ),
+            )
 
     # ショートショット欄はこの位置に出すが、中身は版表示の後で埋める:
     # build_geometry() は不整合で st.stop() するので、サイドバー内で先に呼ぶと
@@ -1873,6 +1923,30 @@ with st.sidebar:
 
 
 # ----------------------- main panel -----------------------
+
+
+def _gate_open_note(md: dict) -> str | None:
+    """When the gates that open later opened (direct gates), from the run's record."""
+    late = md.get("delayed_gates") or []
+    if not late:
+        return None
+    parts = []
+    opened = set()
+    for e in md.get("gate_events") or []:
+        opened.add(int(e["gate"]))
+        parts.append(
+            f"{int(e['gate']) + 2} つ目のゲートは {float(e['t_s']):.2f} 秒で開いた"
+            + ("（樹脂が届いたあと）" if e.get("melt_already_there") else "（樹脂が届く前）")
+        )
+    for k, d in enumerate(late):
+        if k not in opened:
+            why = (
+                "樹脂が届かなかった"
+                if d.get("on_arrival")
+                else f"開く時刻 {float(d['delay_s']):.2f} 秒より先に充填が終わった"
+            )
+            parts.append(f"{k + 2} つ目のゲートは開かなかった（{why}）")
+    return "遅らせて開くゲート: " + "、".join(parts) + "。"
 
 
 def _stall_note(md: dict, unreached: np.ndarray | None, geom: Geometry) -> str | None:
@@ -2095,6 +2169,12 @@ if do_run:
     if inj_error is not None:
         st.error(inj_error)
         st.stop()
+    if geom.delayed_gates and not (multilayer_on and fill_method == "march"):
+        st.error(
+            "直接ゲートを遅らせて開く計算は、壁面冷却の表現が「層別」で、充填の解き方が「時間で追う」のときだけ解ける。"
+            "どちらかを直すか、「2 つ目からのゲートを開く時」を「同時に開く」に戻す。"
+        )
+        st.stop()
     # 刻みごとに解く温度は、射出圧縮では試していないので到達時刻から読む方に戻す
     energy_on = multilayer_on and thermal_model == "energy" and not icm
     if multilayer_on and thermal_model == "energy" and icm:
@@ -2167,7 +2247,13 @@ if do_run:
         # 乗る。層別は固定点を計量 V/Q の時計（膨張なし）で解き直す。
         two_phase_result = None
         two_phase_skip_reason: str | None = None
-        if two_phase_on:
+        if two_phase_on and geom.delayed_gates:
+            # 射出相の時刻を体積の順から作り直すので、遅れて開くバルブを扱えない
+            two_phase_skip_reason = (
+                "直接ゲートを遅らせて開く設定では解きません（ゲートを同時に開く設定で解けます）。"
+            )
+            st.info(f"二相ショートショット解析: {two_phase_skip_reason}")
+        elif two_phase_on:
             try:
                 two_phase_result = solve_two_phase_short_shot(solver, shot_volume_cm3)
             except ValueError as e:
@@ -2340,10 +2426,10 @@ if do_run:
         _flash_path: Path | None = None
         _flash_info: dict | None = None
         _hold_skip: str | None = None
-        if not hold_on:
-            _hold_skip = HOLD_SKIP_OFF
-        elif icm:
+        if icm:  # the sidebar hides the holding inputs with ICM
             _hold_skip = HOLD_SKIP_ICM
+        elif not hold_on:
+            _hold_skip = HOLD_SKIP_OFF
         elif mat.pvt is None:
             _hold_skip = HOLD_SKIP_PVT
         elif not 0.0 < float(solid_fraction) < 1.0:
@@ -2766,6 +2852,9 @@ if "mfs_result" in st.session_state:
         _stall_msg = _stall_note(result.metadata, getattr(result, "unreached_mask", None), geom)
         if _stall_msg is not None:
             st.info(_stall_msg)
+        _gate_msg = _gate_open_note(result.metadata)
+        if _gate_msg is not None:
+            st.info(_gate_msg)
         if result.metadata.get("domain_converged") is False:
             st.warning(
                 "封止で切れたセルを外す領域の絞り込み（二分探索）が上限回数で打ち切られた。"

@@ -40,8 +40,8 @@ arriving now). Units are SI: volumes m³, conductance m³/(Pa·s), pressure Pa.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 
 import numpy as np
 import scipy.sparse as sp
@@ -86,6 +86,27 @@ class MarchFillResult:
     #: limit: either the way to the cells left closed outright, or the limit passed
     #: next to nothing from its first step (the rate history cannot tell which).
     pressure_slowed_steps: int = 0
+    #: one entry per delayed gate that opened, in the order they opened:
+    #: ``{"gate": index into delayed_gates, "t_s": when it opened,
+    #: "melt_already_there": whether its cells were full by then}``
+    gate_events: list[dict] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DelayedGate:
+    """A gate (a valve) that opens after the injection has begun.
+
+    ``cells`` are its gate cells ``(iy, ix)``. Until it opens they are ordinary
+    cavity cells: the melt of the other gates fills them like any other.
+    ``on_arrival=False``: it opens ``delay_s`` after the start of the injection
+    (``t = 0`` on the march's clock). ``on_arrival=True``: it opens ``delay_s``
+    after the melt of the other gates has filled all its cells -- and not at
+    all if that never happens.
+    """
+
+    cells: tuple[tuple[int, int], ...]
+    delay_s: float = 0.0
+    on_arrival: bool = False
 
 
 @dataclass
@@ -146,6 +167,7 @@ def march_fill(
     pressure_limit_Pa: float | None = None,
     stall_rate_fraction: float = 0.01,
     stall_steps: int = 5,
+    delayed_gates: Sequence[DelayedGate] = (),
 ) -> MarchFillResult:
     """Advance the melt front from the gates until the cavity is full.
 
@@ -199,6 +221,16 @@ def march_fill(
         ``on_step`` derives from the flow starts from no flow at all -- the
         zero-shear value -- and grows step by step towards the flow it allows:
         a slow first step is not a stall.)
+    delayed_gates
+        Gates that open later (:class:`DelayedGate`), besides ``gates``. Once
+        open, a gate shares the one gate pressure and the delivery with the
+        others (the manifold's own loss is not modelled). A gate that opens on
+        cells the melt has not filled yet fills them at once; that melt counts
+        as delivered on top of the programme (``volume_injected_m3``). A gate
+        whose cell holds a surplus from the last step opens one step later,
+        once the surplus has moved on. While a
+        gate with a set opening time is still closed, the march is not stopped
+        as stalled: the gate may open the way.
     """
     if not 0.0 < cfl <= 1.0:
         raise ValueError(f"cfl must be in (0, 1] (got {cfl})")
@@ -217,6 +249,25 @@ def march_fill(
     fa, fb = _faces(mask)
     is_gate = np.zeros(n, dtype=bool)
     is_gate[g] = True
+    # the gates that open later: their cells, and when they open (None: not known yet)
+    d_cells: list[np.ndarray] = []
+    for dg in delayed_gates:
+        if dg.delay_s < 0:
+            raise ValueError(f"a delayed gate's delay_s must be >= 0 (got {dg.delay_s})")
+        c = np.array([iy * nx + ix for iy, ix in dg.cells], dtype=np.int64)
+        c = c[m[c]] if c.size else c
+        if c.size == 0:
+            raise ValueError("a delayed gate has no cell in the cavity")
+        if is_gate[c].any():
+            raise ValueError("a delayed gate shares a cell with a gate that is open from the start")
+        d_cells.append(c)
+    d_open_at: list[float | None] = [
+        None if dg.on_arrival else float(dg.delay_s) for dg in delayed_gates
+    ]
+    d_opened = [False] * len(d_cells)
+    gate_events: list[dict] = []
+    v_extra = 0.0  # melt that opening gates put into cells not yet full
+    t_tol = 1e-9 * max(float(dt_max_s), 1.0)
 
     V = np.zeros(n)
     V[g] = C[g]
@@ -265,6 +316,46 @@ def march_fill(
     complete = False
 
     while steps < max_steps:
+        # --- the valves ---
+        for k, dg in enumerate(delayed_gates):
+            if d_opened[k]:
+                continue
+            c = d_cells[k]
+            if d_open_at[k] is None and np.all(V[c] >= C[c] * FULL_REL):
+                d_open_at[k] = t + float(dg.delay_s)  # the melt has reached the gate
+            if d_open_at[k] is None or t < d_open_at[k] - t_tol:
+                continue
+            if np.any(V[c] > C[c]):
+                # a cell that took more than it holds in the last step passes the
+                # surplus on in this one; a gate cell is held exactly full, so
+                # opening now would drop that melt. Open at the next step.
+                continue
+            was_full = bool(np.all(V[c] >= C[c] * FULL_REL))
+            new = c[np.isnan(t_arr[c])]
+            v_extra += float(np.sum(C[c] - np.minimum(V[c], C[c])))
+            V[c] = C[c]
+            t_arr[new] = t
+            S[new] = conductance(new, t_arr[new])
+            is_gate[c] = True
+            g = np.flatnonzero(is_gate)
+            d_opened[k] = True
+            gate_events.append({"gate": k, "t_s": float(t), "melt_already_there": was_full})
+            # the cells next to the gate that opened take one cell of melt at most
+            ig = np.zeros(n, dtype=bool)
+            ig[c] = True
+            nb = np.zeros(n, dtype=bool)
+            nb[fa[ig[fb]]] = True
+            nb[fb[ig[fa]]] = True
+            nb &= m & ~is_gate & (V < C * FULL_REL)
+            if nb.any():
+                dt = min(dt, cfl * float(np.min(C[nb])) * int(nb.sum()) / rate_ahead(t - lag_s))
+        d_next = [
+            d_open_at[k]
+            for k in range(len(d_cells))
+            if not d_opened[k] and d_open_at[k] is not None
+        ]
+        d_ahead = [x for x in d_next if x > t + t_tol]  # not the ones waiting on a surplus
+
         full = m & (V >= C * FULL_REL)
         if full[m].all():
             complete = True
@@ -274,7 +365,39 @@ def march_fill(
         touch[fb[full[fa]]] = True
         front = m & ~full & (touch | (V > 0))
         fr = np.flatnonzero(front)
-        if fr.size == 0:  # nothing left the front can reach (cannot happen on a connected cavity)
+        if fr.size == 0:
+            # nothing left the front can reach: the open gates' part of the cavity
+            # is full. A valve still to open at a set time may feed the rest (a
+            # part of its own): the screw stands still until then.
+            if d_ahead:
+                t_open = min(d_ahead)
+                lag_s += t_open - t
+                if on_step is not None:
+                    # nothing moves, but the melt goes on cooling: hand the wait
+                    # to the caller in steps of dt_max at most
+                    none = np.zeros(0, dtype=np.int64)
+                    while t_open - t > t_tol:
+                        h = min(t_open - t, float(dt_max_s))
+                        S_now = on_step(
+                            MarchStep(
+                                t_s=t,
+                                dt_s=h,
+                                face_a=fa,
+                                face_b=fb,
+                                moved_m3=np.zeros(fa.size),
+                                held_m3=V.copy(),
+                                full=full,
+                                newly=none,
+                                gate_in_m3=np.zeros(n),
+                                pressure_Pa=np.zeros(n),
+                                volume_injected_m3=v_prev_inj + v_extra,
+                            )
+                        )
+                        if S_now is not None:
+                            S[full] = np.asarray(S_now, dtype=float)[full]
+                        t += h
+                t = t_open
+                continue
             break
         S[fr] = conductance(fr, np.full(fr.size, t))
 
@@ -284,6 +407,8 @@ def march_fill(
             bps.pop(0)
         if bps:
             dt = min(dt, bps[0] - tp)
+        if d_ahead:
+            dt = min(dt, min(d_ahead) - t)  # a step ends where a valve opens
         # never deliver more than the cavity still has room for, net of the surplus
         # cells hold and pass on next step: the step that would overshoot is cut to
         # deliver exactly the room left, and once the melt in the cavity fills it
@@ -399,7 +524,8 @@ def march_fill(
                 else:
                     low_run = 1
                 q_low_prev = max(q_limited, q_low_prev if low_run > 1 else 0.0)
-                stalled = low_run >= max(int(stall_steps), 1)
+                # a valve still to open at a set time may open the way: keep going
+                stalled = low_run >= max(int(stall_steps), 1) and not d_next
             else:
                 low_run = 0
                 slowed_steps += 1
@@ -446,7 +572,7 @@ def march_fill(
                     newly=newly,
                     gate_in_m3=gate_in,
                     pressure_Pa=(max(q_total, 0.0) / out1) * p1,
-                    volume_injected_m3=v_next,
+                    volume_injected_m3=v_next + v_extra,
                     late_faces=late_k,
                     late_front_is_b=late_b,
                     late_front_conductance=late_S,
@@ -483,13 +609,14 @@ def march_fill(
         n_steps=steps,
         t_end_s=t,
         complete=complete,
-        volume_injected_m3=v_prev_inj,
+        volume_injected_m3=v_prev_inj + v_extra,
         volume_held_m3=float(V[m].sum()),
         stalled=stalled,
         pressure_limited_steps=limited_steps,
         gate_pressure_max_Pa=p_report_max,
         gate_pressure_free_max_Pa=p_free_max,
         pressure_slowed_steps=slowed_steps,
+        gate_events=gate_events,
     )
 
 

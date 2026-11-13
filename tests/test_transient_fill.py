@@ -15,7 +15,7 @@ import pytest
 from core.geometry import Geometry
 from core.materials import MaterialDB
 from core.multilayer_solver import MultilayerHeleShawSolver
-from core.transient_fill import enclosed_seams, march_fill
+from core.transient_fill import DelayedGate, enclosed_seams, march_fill
 from core.two_phase import solve_two_phase_short_shot
 
 MM3 = 1e-9  # m^3
@@ -555,3 +555,229 @@ def test_a_held_back_screw_changes_stage_by_the_volume_it_delivered():
     # and the cavity never took more than it holds
     assert res.volume_held_m3 <= cap.sum() * (1 + 1e-9)
     assert res.volume_injected_m3 <= cap.sum() * (1 + 1e-6)
+
+
+# ---------------------------------------------------------------- delayed gates
+def _strip(nx=40):
+    mask = np.zeros((3, nx), dtype=bool)
+    mask[1] = True
+    cap = np.where(mask, 1.0 * MM3, 0.0)
+    return mask, cap
+
+
+def _march_strip(delayed, nx=40, Q=4.0 * MM3, **kw):
+    mask, cap = _strip(nx)
+    return march_fill(
+        mask,
+        cap,
+        [(1, 0)],
+        lambda t: Q * t,
+        lambda idx, t_arr: np.full(idx.size, 1e-12),
+        t_start_s=1.0 * MM3 / Q,
+        dt_max_s=0.5,
+        delayed_gates=delayed,
+        **kw,
+    )
+
+
+def test_no_delayed_gate_is_the_march_as_it_was():
+    a = _march_strip(())
+    assert a.gate_events == []
+    assert a.complete
+    np.testing.assert_allclose(a.t_arr_s[1], (np.arange(40) + 1) / 4.0, rtol=1e-9)
+
+
+def test_a_gate_opening_at_a_set_time_starts_a_second_front_then():
+    """A strip fed from the left; a gate at the far end opens at 3 s. Up to then
+    the left front runs alone at one cell per 0.25 s; after it the two fronts
+    share the delivery, and the strip is full when the volume is in."""
+    late = DelayedGate(cells=((1, 39),), delay_s=3.0)
+    res = _march_strip([late])
+    assert res.complete
+    assert res.gate_events == [{"gate": 0, "t_s": pytest.approx(3.0), "melt_already_there": False}]
+    t = res.t_arr_s[1]
+    np.testing.assert_allclose(t[:12], (np.arange(12) + 1) / 4.0, rtol=1e-9)  # alone until 3 s
+    assert t[39] == pytest.approx(3.0)  # the gate's own cell fills as it opens
+    assert t[38] > 3.0 and t[38] < t[20]  # a second front runs back from it
+    # the cell the gate filled on opening is melt the programme did not deliver
+    assert res.volume_held_m3 == pytest.approx(40 * MM3, rel=1e-9)
+    assert res.volume_injected_m3 == pytest.approx(40 * MM3, rel=1e-6)
+    assert res.t_end_s == pytest.approx(39 / 4.0, rel=1e-6)
+
+
+def test_a_gate_opening_on_arrival_waits_for_the_melt_and_leaves_no_second_front():
+    """The gate sits mid-strip and opens when the melt has filled its cell: the
+    arrival times are those of the one front (the delivery is the same, from
+    one gate or two), and the event records that the melt was there."""
+    late = DelayedGate(cells=((1, 20),), delay_s=0.0, on_arrival=True)
+    res = _march_strip([late])
+    assert res.complete
+    (ev,) = res.gate_events
+    assert ev["melt_already_there"] is True
+    assert ev["t_s"] == pytest.approx(21 / 4.0, rel=1e-6)
+    np.testing.assert_allclose(res.t_arr_s[1], (np.arange(40) + 1) / 4.0, rtol=1e-6)
+
+
+def test_a_gate_on_arrival_with_a_delay_opens_that_much_after_the_melt():
+    late = DelayedGate(cells=((1, 10),), delay_s=1.5, on_arrival=True)
+    res = _march_strip([late])
+    (ev,) = res.gate_events
+    assert ev["t_s"] == pytest.approx(11 / 4.0 + 1.5, rel=1e-6)
+
+
+def test_a_gate_the_melt_never_reaches_stays_shut():
+    """Two separate strips: the second one's gate waits for melt that cannot come."""
+    mask = np.zeros((5, 12), dtype=bool)
+    mask[1] = True
+    mask[3] = True
+    cap = np.where(mask, 1.0 * MM3, 0.0)
+    Q = 4.0 * MM3
+    res = march_fill(
+        mask,
+        cap,
+        [(1, 0)],
+        lambda t: Q * min(t, 12 / 4.0),
+        lambda idx, t_arr: np.full(idx.size, 1e-12),
+        t_start_s=0.25,
+        dt_max_s=0.5,
+        max_steps=200,
+        delayed_gates=[DelayedGate(cells=((3, 0),), on_arrival=True)],
+    )
+    assert res.gate_events == []
+    assert not res.complete
+    assert np.isnan(res.t_arr_s[3]).all()
+    assert not np.isnan(res.t_arr_s[1]).any()
+
+
+def test_a_delayed_gate_is_checked():
+    with pytest.raises(ValueError, match="delay_s"):
+        _march_strip([DelayedGate(cells=((1, 5),), delay_s=-1.0)])
+    with pytest.raises(ValueError, match="no cell in the cavity"):
+        _march_strip([DelayedGate(cells=((0, 5),))])
+    with pytest.raises(ValueError, match="open from the start"):
+        _march_strip([DelayedGate(cells=((1, 0),))])
+
+
+def test_a_closed_gate_with_a_set_time_keeps_a_march_at_the_limit_going():
+    """The first gate's way freezes shut (conductance to nothing past cell 5);
+    the second gate opens at 6 s behind the plug and fills the rest. Without the
+    wait the march would stop as stalled before the valve opens."""
+    mask, cap = _strip(20)
+    Q = 4.0 * MM3
+
+    def cond(idx, t_arr):
+        return np.where(idx % 20 == 6, 1e-30, 1e-12)  # cell 6 passes next to nothing
+
+    kw = dict(
+        t_start_s=0.25,
+        dt_max_s=0.5,
+        pressure_limit_Pa=1e7,
+    )
+    alone = march_fill(mask, cap, [(1, 0)], lambda t: Q * t, cond, **kw)
+    assert alone.stalled and not alone.complete
+    res = march_fill(
+        mask,
+        cap,
+        [(1, 0)],
+        lambda t: Q * t,
+        cond,
+        delayed_gates=[DelayedGate(cells=((1, 19),), delay_s=6.0)],
+        **kw,
+    )
+    assert [e["gate"] for e in res.gate_events] == [0]
+    assert res.gate_events[0]["t_s"] == pytest.approx(6.0)
+    assert not np.isnan(res.t_arr_s[1, 8:]).any()
+
+
+def test_a_gate_opening_on_a_cell_with_a_surplus_does_not_drop_the_melt():
+    """Uneven cells and a coarse step cap let a front cell take more than it
+    holds (the surplus moves on with the next step). A gate that opens on
+    arrival there must not hold its cell to capacity and lose that melt: the
+    volume delivered is the volume the cavity holds (Codex P2 on PR #28)."""
+    rng = np.random.default_rng(11)
+    ny, nx = 9, 60
+    mask = np.ones((ny, nx), dtype=bool)
+    cap = rng.uniform(0.2, 3.0, (ny, nx)) * MM3
+    Q = 40.0 * MM3
+    start = [(iy, 0) for iy in range(ny)]
+    late = [
+        DelayedGate(cells=tuple((iy, ix) for iy in range(ny)), on_arrival=True)
+        for ix in (10, 20, 30, 40, 50)
+    ]
+    res = march_fill(
+        mask,
+        cap,
+        start,
+        lambda t: Q * t,
+        _const(1e-12),
+        t_start_s=float(cap[:, 0].sum() / Q),
+        dt_max_s=5.0,
+        delayed_gates=late,
+    )
+    assert res.complete and len(res.gate_events) == 5
+    assert all(e["melt_already_there"] for e in res.gate_events)
+    assert res.volume_held_m3 == pytest.approx(cap.sum(), rel=1e-9)
+    # dropping the surplus made the machine deliver 0.86 % more than the cavity holds
+    assert res.volume_injected_m3 == pytest.approx(cap.sum(), rel=1e-9)
+
+
+def test_a_part_of_the_cavity_fed_only_by_a_timed_gate_waits_for_it():
+    """Two separate strips, the second fed by a gate that opens at 5 s. The
+    first is full at 3 s; the screw stands still until the valve opens, then
+    fills the second at the programmed rate (Codex P2 on PR #28)."""
+    mask = np.zeros((5, 12), dtype=bool)
+    mask[1] = True
+    mask[3] = True
+    cap = np.where(mask, 1.0 * MM3, 0.0)
+    Q = 4.0 * MM3
+    res = march_fill(
+        mask,
+        cap,
+        [(1, 0)],
+        lambda t: Q * t,
+        _const(1e-12),
+        t_start_s=0.25,
+        dt_max_s=0.5,
+        delayed_gates=[DelayedGate(cells=((3, 0),), delay_s=5.0)],
+    )
+    assert res.complete
+    assert res.gate_events == [{"gate": 0, "t_s": pytest.approx(5.0), "melt_already_there": False}]
+    np.testing.assert_allclose(res.t_arr_s[1], (np.arange(12) + 1) / 4.0, rtol=1e-9)
+    np.testing.assert_allclose(res.t_arr_s[3], 5.0 + np.arange(12) / 4.0, rtol=1e-9)
+    assert res.volume_held_m3 == pytest.approx(24 * MM3, rel=1e-9)
+    assert res.volume_injected_m3 == pytest.approx(24 * MM3, rel=1e-9)
+
+
+def test_the_wait_for_a_timed_gate_is_handed_to_on_step():
+    """A caller that carries the temperature has to go on cooling the melt while
+    the screw waits: the steps it sees cover the time without a gap, and the
+    waiting ones move nothing (Codex P2 on PR #28)."""
+    mask = np.zeros((5, 12), dtype=bool)
+    mask[1] = True
+    mask[3] = True
+    cap = np.where(mask, 1.0 * MM3, 0.0)
+    Q = 4.0 * MM3
+    seen = []
+
+    def on_step(st):
+        seen.append((st.t_s, st.dt_s, float(np.abs(st.moved_m3).sum()), float(st.gate_in_m3.sum())))
+
+    res = march_fill(
+        mask,
+        cap,
+        [(1, 0)],
+        lambda t: Q * t,
+        _const(1e-12),
+        t_start_s=0.25,
+        dt_max_s=0.5,
+        on_step=on_step,
+        delayed_gates=[DelayedGate(cells=((3, 0),), delay_s=5.0)],
+    )
+    assert res.complete
+    t0 = np.array([s[0] for s in seen])
+    dt = np.array([s[1] for s in seen])
+    np.testing.assert_allclose(t0[1:], (t0 + dt)[:-1], rtol=1e-9)  # no gap
+    assert t0[0] == pytest.approx(0.25) and (t0 + dt)[-1] == pytest.approx(res.t_end_s)
+    idle = [s for s in seen if 3.0 - 1e-9 <= s[0] < 5.0 - 1e-9]
+    assert sum(s[1] for s in idle) == pytest.approx(2.0)
+    assert all(s[1] <= 0.5 + 1e-12 and s[2] == 0.0 and s[3] == 0.0 for s in idle)

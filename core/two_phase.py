@@ -208,6 +208,10 @@ def solve_two_phase_short_shot(
     geom = solver.geometry
     if not geom.gates:
         raise ValueError("Geometry has no gates")
+    if geom.delayed_gates:
+        # the injection phase's times are rebuilt from the volume CDF below, which
+        # knows nothing of a valve that opens later (Codex P2 on PR #28)
+        raise ValueError("the two-phase short shot is not solved with gates that open later")
     check_gate_reachability(geom)
 
     mask = geom.mask

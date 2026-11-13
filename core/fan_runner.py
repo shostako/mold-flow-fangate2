@@ -118,6 +118,7 @@ import numpy as np
 from scipy import ndimage
 
 from .geometry import Geometry
+from .transient_fill import DelayedGate
 
 #: ``runner_shape`` values: Gate 1 = the customer drawing, Gate 2 = the
 #: pentagon with straight sides (2026-10-06), Gate 3 = Gate 1 with a thick
@@ -129,6 +130,10 @@ RUNNER_SHAPES = (*FAN_SHAPES, *TAB_SHAPES, "thick_tab", "direct")
 
 #: ``direct_layout`` values
 DIRECT_LAYOUTS = ("center", "corners4", "diagonal2")
+#: ``direct_open_mode`` values: every valve opens with the injection; the gates
+#: after the first open a set time after the start of the injection; or each
+#: opens once the melt of the gates before it has reached it
+DIRECT_OPEN_MODES = ("together", "delay", "arrival")
 
 #: Gate 2 as drawn (``docs/spec.md``): on top of the shared defaults, the ramp
 #: ends at the top of the round end and the disc is 2.5 thick.
@@ -201,6 +206,11 @@ class FanRunnerPlateConfig:
     # direct gates on the body
     direct_layout: str = "center"
     direct_inset_mm: float = 15.0  # corners: gate centre in from the body's corner, x and y
+    # when the gates after the first (``direct_points_mm`` order) open: DIRECT_OPEN_MODES
+    direct_open_mode: str = "together"
+    # "delay": seconds after the start of the injection; "arrival": seconds after
+    # the melt has reached the gate
+    direct_delay_s: float = 0.0
     # runner thickness profile by depth below the product edge
     runner_thk_mm: float = 2.5  # t_o: outside the round end (ramp end → bottom)
     runner_edge_thk_mm: float = 1.0  # on the edge band (= rim thickness)
@@ -428,6 +438,13 @@ class FanRunnerPlateConfig:
                 raise ValueError(
                     f"direct_layout ({self.direct_layout!r}) must be one of {DIRECT_LAYOUTS}"
                 )
+            if self.direct_open_mode not in DIRECT_OPEN_MODES:
+                raise ValueError(
+                    f"direct_open_mode ({self.direct_open_mode!r}) must be one of "
+                    f"{DIRECT_OPEN_MODES}"
+                )
+            if not 0.0 <= self.direct_delay_s < float("inf"):
+                raise ValueError(f"direct_delay_s ({self.direct_delay_s}) must be ≥ 0")
             if self.direct_layout != "center":
                 inset_sup = 0.5 * (min(self.plate_w_mm, self.plate_h_mm) - 2 * self.frame_w_mm)
                 r_gate = self.gate_d_mm / 2.0
@@ -747,15 +764,26 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
                 f"{cfg.plate_w_mm - 2 * cfg.frame_w_mm:g} × {cfg.plate_h_mm - 2 * cfg.frame_w_mm:g}"
                 f" mm); a direct gate needs a body cell to sit on. Refine the mesh"
             )
-        for px, py in pts:
+        for k, (px, py) in enumerate(pts):
             r2 = (xx - cx - px) ** 2 + (yy - y_edge - py) ** 2
             sel = (r2 <= (cfg.gate_d_mm / 2.0) ** 2) & body
             if not sel.any():
                 sel[np.unravel_index(int(np.argmin(np.where(body, r2, np.inf))), r2.shape)] = True
                 geom.valve_marker_mm = None
+            own = []
             for iy, ix in zip(*np.where(sel), strict=True):
                 if (int(iy), int(ix)) not in geom.gates:
                     geom.gates.append((int(iy), int(ix)))
+                    own.append((int(iy), int(ix)))
+            # the gates after the first open later, when asked to
+            if k > 0 and own and cfg.direct_open_mode != "together":
+                geom.delayed_gates.append(
+                    DelayedGate(
+                        cells=tuple(own),
+                        delay_s=float(cfg.direct_delay_s),
+                        on_arrival=cfg.direct_open_mode == "arrival",
+                    )
+                )
         if len(pts) == 1 and geom.valve_marker_mm is not None:
             geom.valve_marker_mm = (
                 float(cx + pts[0][0]),
