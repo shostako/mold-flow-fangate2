@@ -415,9 +415,12 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- **射出圧の上限**: ゲートの圧力が上限に達すると流量が落ちる。流れが止まれば、そこで充填を止める。"
         "止まった理由は結果の先頭に出す: 上限に達して流量が落ちたのか、上限で流量が落ちる前に残りへ入る所のマスが中心まで固まったのか"
         "（どちらとも示せないときは、そう書く）。"
-        "先端のマスの流れやすさは、そのマスに入っている樹脂の温度で決める。先に少し入って固まったマスには、"
-        "後から来た樹脂が入れない。先に止まった先端と後から来た先端の合わせ目に、両側に樹脂が届いた幅 1〜2 マスの線が残ることがあり、"
-        "これは欠けの予測ではない（ウェルドが弱く出やすい場所の目安として読む）\n"
+        "\n"
+        "- **先端のマス**: 流れやすさは、そのマスに入っている樹脂の温度で決める。先に少し入って固まったマスは、"
+        "その樹脂を送ってきた隣のマスからは、もう入れない（先に入った樹脂を押して進むことになる）。"
+        "別の向きから後で届いた先端は、マスの空いた側に当たるので、入ってくる樹脂の温度と、そのマスの肉厚で決めた流れやすさで入る"
+        "（先端のマスが樹脂を受け始めたあとに満ちた隣のマスを、後から届いた先端とみなす）。"
+        "この扱いが無いと、先に止まって固まった先端と後から来た先端の合わせ目に、幅 1 マスの線が埋まらずに残る\n"
         "- **保圧へ**: VP 切替の時点の状態をそのまま保圧の計算（§9）へ渡し、保圧中も同じ 3 つの効果を刻みごとに解く\n\n"
         "入っていないもの: 面内（板の広がる向き）の熱伝導、金型の中の温度の分布（金型の表面は一様に金型温度）、"
         "射出圧縮成形との組み合わせ（射出圧縮 ON では到達時刻から読む方で解く）。"
@@ -1711,11 +1714,11 @@ def _stall_note(md: dict, unreached: np.ndarray | None, geom: Geometry) -> str |
     The march stops either at the injection pressure limit with the rate fallen
     away, or with the way to the last cells frozen shut before the limit ever
     slowed the melt. The second leaves, where a front that stopped and froze
-    meets a later one, a line one or two cells wide with melt on both sides: a
-    front cell takes its conductance from the melt already in it, so melt that
-    arrives later cannot enter. That line is how the model is built, not a short
-    shot. A rim or a region left unfilled stays a short shot, and a stall the
-    record cannot attribute is reported as such.
+    meets a later one whose melt is solid as well, a line one or two cells wide
+    with melt on both sides (a later front that still flows fills the cell:
+    ``MultilayerHeleShawSolver.late_front_inflow``). That line is a seam, not a
+    region the melt did not reach. A rim or a region left unfilled stays a short
+    shot, and a stall the record cannot attribute is reported as such.
     """
     if not md.get("march_stalled") or unreached is None:
         return None
@@ -1749,9 +1752,9 @@ def _stall_note(md: dict, unreached: np.ndarray | None, geom: Geometry) -> str |
         head
         + why
         + (
-            "残りは幅 1〜2 マスの線で、線の両側には樹脂が届いている。先に止まって固まった先端と、後から来た先端の合わせ目にあたる。"
-            "先端のマスの流れやすさを、そのマスに先に入って固まった樹脂で決める作りのために残るもので、"
-            "欠けの予測ではない。固まった先端に後から樹脂が当たる所なので、ウェルドが弱く出やすい場所の目安として読む。"
+            "残りは幅 1〜2 マスの線で、線の両側には樹脂が届いている。2 つの先端の合わせ目にあたり、"
+            "どちらの側の樹脂も固まっていて、間が埋まらない。面で欠ける予測ではなく、"
+            "ウェルドが弱く出やすい場所の目安として読む。"
         )
     )
 

@@ -1,6 +1,7 @@
 """均一板（t2・t3・t4）× ゲート 5 種で、温度を到達時刻から読む方と刻みごとに解く方を比べる。
 
-使い方: python uniform_check.py <case> <出力フォルダ> [格子 mm]
+使い方: python uniform_check.py <case> <出力フォルダ> [格子 mm] [late|nolate]
+5 つ目を付けると刻みごとに解く方だけを解く。nolate は、後から来た先端の流れ込みの扱い（late_front_inflow）を切る。
 case は t{厚さ}_{FAN1|FILM|TAB2|TABF|DC}。形は fanuc-monitor/scripts/pack_reach_20261111/uniform_matrix.py の build。
 充填（arrival / energy）と保圧（series / 充填の温度を渡す layers）を解き、板の中の縮みと圧力を JSON に書く。
 保圧は 60 MPa・10 秒、VP 99 %、送る量の上限は射出率。
@@ -33,12 +34,13 @@ VP = 0.99
 def main():
     name, out = sys.argv[1], Path(sys.argv[2])
     cell = float(sys.argv[3]) if len(sys.argv) > 3 else 2.0
+    late = sys.argv[4] if len(sys.argv) > 4 else None
     out.mkdir(parents=True, exist_ok=True)
     t, gate, neck, geom, X, Y = um.build(name, cell)
     mat = MaterialDB()["PMMA"]
     plate = geom.mask & (Y > 0) & (Y <= um.PLATE_H) & (np.abs(X) <= um.PLATE_W / 2)
     row: dict = {"case": name, "thickness_mm": t, "gate": gate, "neck_mm": neck, "cell_mm": cell}
-    for model in ("arrival", "energy"):
+    for model in ("arrival", "energy") if late is None else ("energy",):
         t0 = time.time()
         fill = MultilayerHeleShawSolver(
             geometry=geom, material=mat, melt_temperature_K=533.15, mold_temperature_K=333.15,
@@ -46,6 +48,7 @@ def main():
             num_layers=7, thermal_coupling=True, solidification_temperature_fraction=um.SOLID,
             shear_heating_enabled=True, fill_method="march", thermal_model=model,
             thermal_snapshot_fractions=(VP,) if model == "energy" else (),
+            late_front_inflow=late != "nolate",
         ).solve(num_frames=4)  # fmt: skip
         md = fill.metadata
         row[f"{model}_fill_s"] = time.time() - t0
@@ -85,7 +88,9 @@ def main():
             json.dumps({k: v for k, v in row.items() if k.startswith(tag) or k.startswith(model)}),
             flush=True,
         )
-    (out / f"{name}_{cell:g}.json").write_text(json.dumps(row, indent=1, ensure_ascii=False))
+    (out / f"{name}_{cell:g}{'' if late is None else '_' + late}.json").write_text(
+        json.dumps(row, indent=1, ensure_ascii=False)
+    )
 
 
 if __name__ == "__main__":

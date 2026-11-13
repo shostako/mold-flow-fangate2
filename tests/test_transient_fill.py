@@ -473,6 +473,50 @@ def test_enclosed_seams_wants_melt_on_both_sides_of_the_line():
     assert not enclosed_seams(left, chan)
 
 
+def _two_fronts(late_inflow, gates):
+    # a strip with a cell in the middle that passes next to nothing of its own
+    # (the melt in it froze). The cell right of it holds five times as much, so
+    # with a gate at each end the left front reaches the middle cell first
+    mask = np.ones((1, 7), dtype=bool)
+    cap = np.full((1, 7), 1.0 * MM3)
+    cap[0, 4] = 5.0 * MM3
+    Q = 10.0 * MM3
+    seen = []
+
+    def own(idx, t):
+        return np.where(idx == 3, 1e-30, 1e-9)
+
+    def watch(st):
+        if st.late_faces is not None:
+            seen.append((st.face_a[st.late_faces], st.face_b[st.late_faces], st.late_front_is_b))
+        return None
+
+    v0 = len(gates) * 1.0 * MM3
+    res = march_fill(
+        mask, cap, gates, lambda t: Q * t, own,
+        t_start_s=v0 / Q, dt_max_s=0.05, pressure_limit_Pa=1e6,
+        late_inflow=late_inflow, on_step=watch,
+    )  # fmt: skip
+    return res, seen
+
+
+def test_a_front_that_arrives_later_fills_the_cell_a_frozen_front_left():
+    fresh = lambda front, feeder: np.full(front.size, 1e-9)  # noqa: E731
+    both_ends = [(0, 0), (0, 6)]
+    shut, _ = _two_fronts(None, both_ends)
+    assert shut.stalled and np.isnan(shut.t_arr_s[0, 3]) and not np.isnan(shut.t_arr_s[0, 4])
+    res, seen = _two_fronts(fresh, both_ends)
+    assert res.complete and not res.stalled and res.pressure_limited_steps == 0
+    # the face the late front came through: cell 4 feeding cell 3 (the front cell is the a side)
+    assert seen and all(
+        a.tolist() == [3] and b.tolist() == [4] and not is_b.any() for a, b, is_b in seen
+    )
+    # the neighbour the frozen melt came from stays shut: with the one gate on the
+    # left, nothing arrives from the other side and the fill stops at the cell
+    one, seen_one = _two_fronts(lambda front, feeder: np.full(front.size, 1.0), [(0, 0)])
+    assert one.stalled and np.isnan(one.t_arr_s[0, 3]) and not seen_one
+
+
 def test_a_held_back_screw_changes_stage_by_the_volume_it_delivered():
     # two stages by screw position: slow up to 10 cells' worth, fast after. The
     # pressure limit holds the first stage to a fraction of its rate, so on the
