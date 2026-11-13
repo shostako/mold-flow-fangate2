@@ -226,7 +226,9 @@ def march_fill(
         open, a gate shares the one gate pressure and the delivery with the
         others (the manifold's own loss is not modelled). A gate that opens on
         cells the melt has not filled yet fills them at once; that melt counts
-        as delivered on top of the programme (``volume_injected_m3``). While a
+        as delivered on top of the programme (``volume_injected_m3``). A gate
+        whose cell holds a surplus from the last step opens one step later,
+        once the surplus has moved on. While a
         gate with a set opening time is still closed, the march is not stopped
         as stalled: the gate may open the way.
     """
@@ -323,6 +325,11 @@ def march_fill(
                 d_open_at[k] = t + float(dg.delay_s)  # the melt has reached the gate
             if d_open_at[k] is None or t < d_open_at[k] - t_tol:
                 continue
+            if np.any(V[c] > C[c]):
+                # a cell that took more than it holds in the last step passes the
+                # surplus on in this one; a gate cell is held exactly full, so
+                # opening now would drop that melt. Open at the next step.
+                continue
             was_full = bool(np.all(V[c] >= C[c] * FULL_REL))
             new = c[np.isnan(t_arr[c])]
             v_extra += float(np.sum(C[c] - np.minimum(V[c], C[c])))
@@ -347,6 +354,7 @@ def march_fill(
             for k in range(len(d_cells))
             if not d_opened[k] and d_open_at[k] is not None
         ]
+        d_ahead = [x for x in d_next if x > t + t_tol]  # not the ones waiting on a surplus
 
         full = m & (V >= C * FULL_REL)
         if full[m].all():
@@ -367,8 +375,8 @@ def march_fill(
             bps.pop(0)
         if bps:
             dt = min(dt, bps[0] - tp)
-        if d_next:
-            dt = min(dt, min(d_next) - t)  # a step ends where a valve opens
+        if d_ahead:
+            dt = min(dt, min(d_ahead) - t)  # a step ends where a valve opens
         # never deliver more than the cavity still has room for, net of the surplus
         # cells hold and pass on next step: the step that would overshoot is cut to
         # deliver exactly the room left, and once the melt in the cavity fills it

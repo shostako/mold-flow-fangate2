@@ -687,3 +687,35 @@ def test_a_closed_gate_with_a_set_time_keeps_a_march_at_the_limit_going():
     assert [e["gate"] for e in res.gate_events] == [0]
     assert res.gate_events[0]["t_s"] == pytest.approx(6.0)
     assert not np.isnan(res.t_arr_s[1, 8:]).any()
+
+
+def test_a_gate_opening_on_a_cell_with_a_surplus_does_not_drop_the_melt():
+    """Uneven cells and a coarse step cap let a front cell take more than it
+    holds (the surplus moves on with the next step). A gate that opens on
+    arrival there must not hold its cell to capacity and lose that melt: the
+    volume delivered is the volume the cavity holds (Codex P2 on PR #28)."""
+    rng = np.random.default_rng(11)
+    ny, nx = 9, 60
+    mask = np.ones((ny, nx), dtype=bool)
+    cap = rng.uniform(0.2, 3.0, (ny, nx)) * MM3
+    Q = 40.0 * MM3
+    start = [(iy, 0) for iy in range(ny)]
+    late = [
+        DelayedGate(cells=tuple((iy, ix) for iy in range(ny)), on_arrival=True)
+        for ix in (10, 20, 30, 40, 50)
+    ]
+    res = march_fill(
+        mask,
+        cap,
+        start,
+        lambda t: Q * t,
+        _const(1e-12),
+        t_start_s=float(cap[:, 0].sum() / Q),
+        dt_max_s=5.0,
+        delayed_gates=late,
+    )
+    assert res.complete and len(res.gate_events) == 5
+    assert all(e["melt_already_there"] for e in res.gate_events)
+    assert res.volume_held_m3 == pytest.approx(cap.sum(), rel=1e-9)
+    # dropping the surplus made the machine deliver 0.86 % more than the cavity holds
+    assert res.volume_injected_m3 == pytest.approx(cap.sum(), rel=1e-9)
