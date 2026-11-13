@@ -17,7 +17,7 @@ THIN_NOTE = "薄い所（1 mm の額縁など）が保圧で埋まるかの判�
 def _run(at, *, wall: str, energy: bool = False, clamp_kN: float | None = None):
     at.radio(key="wall_model").set_value(wall)
     at.checkbox(key="two_phase_on").set_value(False)
-    at.checkbox(key="icm_on").set_value(False)
+    at.radio(key="molding_method").set_value("conventional")
     at.checkbox(key="hold_on").set_value(True).run()
     at.number_input(key="hold_p_mpa").set_value(90.0)
     at.number_input(key="hold_t_s").set_value(10.0)
@@ -105,7 +105,7 @@ def test_the_wall_at_the_mold_temperature_and_a_flash_threshold():
     at = _app()
     at.radio(key="wall_model").set_value("multilayer")
     at.checkbox(key="two_phase_on").set_value(False)
-    at.checkbox(key="icm_on").set_value(False)
+    at.radio(key="molding_method").set_value("conventional")
     at.checkbox(key="hold_on").set_value(True).run()
     assert at.number_input(key="flash_threshold_mpa").value is None
     at.number_input(key="hold_p_mpa").set_value(90.0)
@@ -134,7 +134,7 @@ def test_a_fill_that_stalls_before_the_switch_hands_over_where_it_stopped():
     at = _app()
     at.radio(key="wall_model").set_value("multilayer")
     at.checkbox(key="two_phase_on").set_value(False)
-    at.checkbox(key="icm_on").set_value(False)
+    at.radio(key="molding_method").set_value("conventional")
     at.checkbox(key="hold_on").set_value(True).run()
     at.radio(key="fill_method").set_value("march").run()
     at.radio(key="thermal_model").set_value("energy").run()

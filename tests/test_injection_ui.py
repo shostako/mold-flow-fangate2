@@ -165,7 +165,7 @@ def test_one_stage_hands_the_solver_a_flat_rate():
 def test_doubling_the_speed_halves_the_fill_time():
     """The acceptance criterion: the speed setting owns the time axis."""
     at = _app()
-    at.checkbox(key="icm_on").set_value(False)
+    at.radio(key="molding_method").set_value("conventional")
     _quick(at)
     at.button[0].click().run()
     assert not at.exception
@@ -438,7 +438,7 @@ def test_the_two_phase_panel_warns_when_the_shot_runs_past_vp():
     at.number_input(key="inj_screw_d").set_value(SMALL_SCREW_D)
     at.radio(key="wall_model").set_value("none")
     at.checkbox(key="two_phase_on").set_value(True)
-    at.checkbox(key="icm_on").set_value(True).run()
+    at.radio(key="molding_method").set_value("icm").run()
     # past the small screw's stroke (sim: 3.77 cm3, fangate2: 41.5 cm3)
     at.number_input(key="two_phase_shot_volume").set_value(round(1.2 * SMALL_STROKE_CM3, 2))
     at.button[0].click().run()
@@ -453,7 +453,7 @@ def test_the_two_phase_panel_is_quiet_when_the_shot_fits_the_stroke():
     at = _staged(2)
     at.radio(key="wall_model").set_value("none")
     at.checkbox(key="two_phase_on").set_value(True)
-    at.checkbox(key="icm_on").set_value(True).run()
+    at.radio(key="molding_method").set_value("icm").run()
     at.number_input(key="two_phase_shot_volume").set_value(4.5)
     at.button[0].click().run()
     assert not at.exception

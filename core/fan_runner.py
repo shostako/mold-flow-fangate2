@@ -77,6 +77,33 @@ requires ``balancer_thk`` below ``runner_thk`` so the cut is real somewhere.
 
 Plate: ``frame_thk`` on the ``frame_w`` border, ``inner_thk`` inside.
 
+**The gate side.** The product proper is the body and the rim on three
+sides; the rim's fourth side (the band ``frame_w`` deep along the gate-side
+edge) belongs to the gate, and ``runner_shape`` decides both it and the
+runner. The three fan runners above leave the band a plain rim. The others:
+
+- **Centre tab** (``"tab"``, the 2026-11-10 trial): a trapezoid ``tab_w`` wide
+  on the edge line narrowing (or widening) to the round end's diameter on the
+  axis line, ∪ the disc. Thickness ``tab_end_thk`` at the edge, a linear ramp
+  to ``tab_thk`` at ``tab_ramp_len``, ``tab_thk`` on to and inside the disc.
+  The band stays a plain rim.
+- **Overlap tab** (``"overlap_tab"``): the same trapezoid, ``tab_thk``
+  throughout, and it runs on under the rim: the band is ``lap_thk`` over the
+  tab's width (rim + tab), a plain rim elsewhere.
+- **Thick tab** (``"thick_tab"``): a triangle ``thick_tab_w`` wide on the edge
+  line with its apex on the sprue axis, ∪ the disc, ``thick_tab_thk``
+  throughout; the band is ``thick_tab_thk`` over the tab's width, **cut away**
+  (no cavity) from there out to ``corner_keep`` short of the body's side
+  edge, and a plain rim beyond (the corners).
+- **Direct gates** (``"direct"``): no runner. Valve gates ``gate_d`` across
+  open straight onto the body: ``direct_layout`` ``"center"`` (one, at the
+  body's centre), ``"corners4"`` (one ``direct_inset`` in from each corner of
+  the body) or ``"diagonal2"`` (two of those, on a diagonal). They open
+  together at one pressure. The band stays a plain rim.
+
+The runner fields that a shape does not read (the fan's width, flank, side,
+profile, arms and balancer on the four shapes above) are not validated for it.
+
 Compression (ICM): **only the inner body** inflates (``compression_mask``);
 the rim and the whole runner are fixed. ``product_mask`` is rim + body so
 the display origin stays on the product edge.
@@ -94,8 +121,14 @@ from .geometry import Geometry
 
 #: ``runner_shape`` values: Gate 1 = the customer drawing, Gate 2 = the
 #: pentagon with straight sides (2026-10-06), Gate 3 = Gate 1 with a thick
-#: arm along each flank (2026-10-06)
-RUNNER_SHAPES = ("triangle", "pentagon", "triangle_arms")
+#: arm along each flank (2026-10-06); then the shapes that also decide the
+#: gate-side band of the rim (module docstring, "The gate side")
+FAN_SHAPES = ("triangle", "pentagon", "triangle_arms")
+TAB_SHAPES = ("tab", "overlap_tab")
+RUNNER_SHAPES = (*FAN_SHAPES, *TAB_SHAPES, "thick_tab", "direct")
+
+#: ``direct_layout`` values
+DIRECT_LAYOUTS = ("center", "corners4", "diagonal2")
 
 #: Gate 2 as drawn (``docs/spec.md``): on top of the shared defaults, the ramp
 #: ends at the top of the round end and the disc is 2.5 thick.
@@ -109,6 +142,28 @@ GATE2_DEFAULTS: dict = {
 #: defaults (``arm_w_mm`` / ``arm_thk_mm``).
 GATE3_DEFAULTS: dict = {
     "runner_shape": "triangle_arms",
+}
+
+#: Centre tab as tried on 2026-11-10: 30 wide, t1.0 at the edge → t2.0.
+TAB_DEFAULTS: dict = {
+    "runner_shape": "tab",
+}
+
+#: Overlap tab as drawn on 2026-11-11 (the t3.5 revision): 30 wide, t3.5, and
+#: t3.5 where it laps the rim.
+OVERLAP_TAB_DEFAULTS: dict = {
+    "runner_shape": "overlap_tab",
+    "tab_thk_mm": 3.5,
+}
+
+#: Thick tab: 100 wide at the body's thickness, the corners keep 30 of rim.
+THICK_TAB_DEFAULTS: dict = {
+    "runner_shape": "thick_tab",
+}
+
+#: One valve gate at the centre of the body.
+DIRECT_DEFAULTS: dict = {
+    "runner_shape": "direct",
 }
 
 
@@ -128,11 +183,24 @@ class FanRunnerPlateConfig:
     fan_flank_deg: float = 14.0  # flank angle to the product edge line
     runner_len_mm: float = 30.0  # product edge → sprue axis
     runner_end_d_mm: float = 24.0  # round end (R12) centred on the axis
-    runner_shape: str = "triangle"  # Gate 1 "triangle" / Gate 2 "pentagon" / Gate 3 "triangle_arms"
+    runner_shape: str = "triangle"  # one of RUNNER_SHAPES
     side_len_mm: float = 28.0  # Gate 2: side length below the product edge (rim excluded)
     # Gate 3: a groove along each flank (width square to the flank, thickness inside it)
     arm_w_mm: float = 9.0
     arm_thk_mm: float = 3.5
+    # centre tab / overlap tab: tab_w on the edge line → the round end's diameter
+    tab_w_mm: float = 30.0
+    tab_thk_mm: float = 2.0  # near the gate and inside the round end (overlap tab: throughout)
+    tab_end_thk_mm: float = 1.0  # centre tab: at the product edge
+    tab_ramp_len_mm: float = 18.0  # centre tab: edge → where tab_thk is reached
+    lap_thk_mm: float = 3.5  # overlap tab: the gate-side band over the tab's width
+    # thick tab
+    thick_tab_w_mm: float = 100.0
+    thick_tab_thk_mm: float = 4.0
+    corner_keep_mm: float = 30.0  # rim kept inward of the body's side edge, each corner
+    # direct gates on the body
+    direct_layout: str = "center"
+    direct_inset_mm: float = 15.0  # corners: gate centre in from the body's corner, x and y
     # runner thickness profile by depth below the product edge
     runner_thk_mm: float = 2.5  # t_o: outside the round end (ramp end → bottom)
     runner_edge_thk_mm: float = 1.0  # on the edge band (= rim thickness)
@@ -187,11 +255,12 @@ class FanRunnerPlateConfig:
             raise ValueError(
                 f"frame_w_mm ({self.frame_w_mm}) must be < half of the smaller plate side"
             )
-        if self.fan_flank_deg >= 90.0 - eps:
+        fan = self.runner_shape in FAN_SHAPES
+        if fan and self.fan_flank_deg >= 90.0 - eps:
             raise ValueError(
                 f"fan_flank_deg ({self.fan_flank_deg}) must be < 90 (the flanks converge)"
             )
-        if self.runner_w_mm > self.plate_w_mm + eps:
+        if fan and self.runner_w_mm > self.plate_w_mm + eps:
             raise ValueError(
                 f"runner_w_mm ({self.runner_w_mm}) must be ≤ plate_w_mm ({self.plate_w_mm})"
             )
@@ -201,6 +270,9 @@ class FanRunnerPlateConfig:
                 f"runner_end_d_mm / 2 ({r_end}) must be ≤ runner_len_mm ({self.runner_len_mm}); "
                 f"the round end must not reach into the product"
             )
+        if not fan:
+            self._validate_gate_side(eps)
+            return
         if self.runner_ramp_on and self.runner_edge_flat_mm > self.ramp_end_depth_mm + eps:
             raise ValueError(
                 f"runner_edge_flat_mm ({self.runner_edge_flat_mm}) must be ≤ the ramp's deep end "
@@ -279,7 +351,106 @@ class FanRunnerPlateConfig:
                     f"runner_end_d_mm / 2 ({h_max}) so the apex stays outside the round end"
                 )
 
+    def _validate_gate_side(self, eps: float) -> None:
+        """The shapes that are not a fan runner: only what each one reads."""
+        shape = self.runner_shape
+        if self.balancer_on:
+            raise ValueError(
+                f"balancer_on applies to the fan runners {FAN_SHAPES} only "
+                f"(runner_shape = {shape!r}); it cuts the fan's thickness profile"
+            )
+        if shape != "direct":
+            if self.runner_end_d_mm > self.plate_w_mm + eps:
+                raise ValueError(
+                    f"runner_end_d_mm ({self.runner_end_d_mm}) must be ≤ plate_w_mm "
+                    f"({self.plate_w_mm}); the round end stays inside the plate's x extent"
+                )
+            if self.gate_d_mm > self.runner_end_d_mm + eps:
+                raise ValueError(
+                    f"gate_d_mm ({self.gate_d_mm}) must be ≤ runner_end_d_mm "
+                    f"({self.runner_end_d_mm})"
+                )
+            if self.cell_size_mm > self.runner_end_d_mm + eps:
+                raise ValueError(
+                    f"cell_size_mm ({self.cell_size_mm}) must be ≤ runner_end_d_mm "
+                    f"({self.runner_end_d_mm}); a mesh coarser than the round end cannot "
+                    f"resolve the runner"
+                )
+        if shape in TAB_SHAPES:
+            checks = [("tab_w_mm", self.tab_w_mm), ("tab_thk_mm", self.tab_thk_mm)]
+            if shape == "tab":
+                checks.append(("tab_end_thk_mm", self.tab_end_thk_mm))
+            else:
+                checks.append(("lap_thk_mm", self.lap_thk_mm))
+            for name, val in checks:
+                if val <= 0:
+                    raise ValueError(f"{name} must be positive (got {val})")
+            if self.tab_w_mm > self.plate_w_mm + eps:
+                raise ValueError(
+                    f"tab_w_mm ({self.tab_w_mm}) must be ≤ plate_w_mm ({self.plate_w_mm})"
+                )
+            if shape == "tab":
+                if self.tab_ramp_len_mm < 0:
+                    raise ValueError(f"tab_ramp_len_mm must be ≥ 0 (got {self.tab_ramp_len_mm})")
+                ramp_max = self.runner_len_mm - self.runner_end_d_mm / 2.0
+                if self.tab_ramp_len_mm > ramp_max + eps:
+                    raise ValueError(
+                        f"tab_ramp_len_mm ({self.tab_ramp_len_mm}) must be ≤ runner_len_mm − "
+                        f"runner_end_d_mm / 2 ({ramp_max:g}); the ramp stays outside the round end"
+                    )
+            elif self.lap_thk_mm < self.frame_thk_mm - eps:
+                raise ValueError(
+                    f"lap_thk_mm ({self.lap_thk_mm}) must be ≥ frame_thk_mm ({self.frame_thk_mm}); "
+                    f"the tab laps under the rim, it only adds to it"
+                )
+        elif shape == "thick_tab":
+            for name, val in (
+                ("thick_tab_w_mm", self.thick_tab_w_mm),
+                ("thick_tab_thk_mm", self.thick_tab_thk_mm),
+            ):
+                if val <= 0:
+                    raise ValueError(f"{name} must be positive (got {val})")
+            if self.corner_keep_mm < 0:
+                raise ValueError(f"corner_keep_mm must be ≥ 0 (got {self.corner_keep_mm})")
+            if self.thick_tab_w_mm > self.plate_w_mm + eps:
+                raise ValueError(
+                    f"thick_tab_w_mm ({self.thick_tab_w_mm}) must be ≤ plate_w_mm "
+                    f"({self.plate_w_mm})"
+                )
+        else:  # direct
+            if self.gate_d_mm > min(self.plate_w_mm, self.plate_h_mm) - 2 * self.frame_w_mm + eps:
+                raise ValueError(
+                    f"gate_d_mm ({self.gate_d_mm}) must fit on the body "
+                    f"({self.plate_w_mm - 2 * self.frame_w_mm:g} × "
+                    f"{self.plate_h_mm - 2 * self.frame_w_mm:g})"
+                )
+            if self.direct_layout not in DIRECT_LAYOUTS:
+                raise ValueError(
+                    f"direct_layout ({self.direct_layout!r}) must be one of {DIRECT_LAYOUTS}"
+                )
+            if self.direct_layout != "center":
+                inset_sup = 0.5 * (min(self.plate_w_mm, self.plate_h_mm) - 2 * self.frame_w_mm)
+                if not 0.0 <= self.direct_inset_mm < inset_sup - eps:
+                    raise ValueError(
+                        f"direct_inset_mm ({self.direct_inset_mm}) must be in [0, {inset_sup:g}) "
+                        f"(half of the body's smaller side)"
+                    )
+
     # ----- derived quantities -----
+    @property
+    def direct_points_mm(self) -> list[tuple[float, float]]:
+        """Direct gates: ``(x, y)`` of each gate centre, ``x`` from the sprue
+        axis, ``y`` above the product's gate-side edge."""
+        yc = 0.5 * self.plate_h_mm
+        if self.direct_layout == "center":
+            return [(0.0, yc)]
+        xk = 0.5 * self.plate_w_mm - self.frame_w_mm - self.direct_inset_mm
+        y0 = self.frame_w_mm + self.direct_inset_mm
+        y1 = self.plate_h_mm - y0
+        if self.direct_layout == "diagonal2":
+            return [(-xk, y0), (xk, y1)]
+        return [(-xk, y0), (xk, y0), (-xk, y1), (xk, y1)]
+
     @property
     def ramp_end_depth_mm(self) -> float:
         """The ramp's deep end below the product edge: ``runner_ramp_end_mm``,
@@ -419,8 +590,23 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
     r2_axis = (xx - cx) ** 2 + (yy - y_axis) ** 2
     dd = y_edge - yy  # depth below the product edge
 
+    shape = cfg.runner_shape
     in_end = r2_axis <= r_end**2
-    if cfg.runner_shape == "pentagon":
+    if shape == "direct":
+        # no runner at all: the gates sit on the body
+        in_end = np.zeros_like(in_end)
+        in_runner = in_end
+    elif shape in TAB_SHAPES:
+        # --- silhouette: trapezoid tab_w on the edge → the disc's diameter on
+        # the axis line, ∪ the disc ---
+        half_tab = 0.5 * cfg.tab_w_mm + (r_end - 0.5 * cfg.tab_w_mm) * dd / cfg.runner_len_mm
+        in_tab = (dd >= 0.0) & (dd <= cfg.runner_len_mm) & (ax <= half_tab)
+        in_runner = in_tab | in_end
+    elif shape == "thick_tab":
+        # --- silhouette: triangle thick_tab_w on the edge, apex on the axis, ∪ the disc ---
+        half_tab = 0.5 * cfg.thick_tab_w_mm * (1.0 - dd / cfg.runner_len_mm)
+        in_runner = ((dd >= 0.0) & (dd <= cfg.runner_len_mm) & (ax <= half_tab)) | in_end
+    elif shape == "pentagon":
         # --- silhouette: convex hull of the side rectangle and the disc ---
         half_w = 0.5 * cfg.runner_w_mm
         s = cfg.side_len_mm
@@ -440,7 +626,13 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
         in_runner = in_tri | in_end
     in_x_plate = (xx >= x_left) & (xx <= x_left + cfg.plate_w_mm)
     in_plate = (yy > y_edge) & (yy <= y_top) & in_x_plate
-    mask = in_runner | in_plate
+    # the gate-side band of the rim: the gate's to shape (module docstring)
+    in_band = in_plate & (yy < y_edge + cfg.frame_w_mm)
+    inner_half = 0.5 * cfg.plate_w_mm - cfg.frame_w_mm  # the body's side edge, from the axis
+    in_cut = np.zeros_like(in_band)
+    if shape == "thick_tab":
+        in_cut = in_band & (ax >= 0.5 * cfg.thick_tab_w_mm) & (ax < inner_half - cfg.corner_keep_mm)
+    mask = (in_runner | in_plate) & ~in_cut
     if not mask.any():
         raise ValueError(
             f"cell_size_mm ({dx}) rasterises the whole cavity away ({ny}x{nx} grid, no cavity cell)"
@@ -451,6 +643,11 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
     # check_gate_reachability with a far less useful message (Codex P2 on PR #4)
     _, n_parts = ndimage.label(mask)
     if n_parts != 1:
+        if shape not in FAN_SHAPES:
+            raise ValueError(
+                f"cell_size_mm ({dx}) rasterises the cavity into {n_parts} disconnected parts "
+                f"(runner_shape = {shape!r}); refine the mesh or widen the tab"
+            )
         raise ValueError(
             f"cell_size_mm ({dx}) rasterises the cavity into {n_parts} disconnected parts "
             f"(the runner's flanks barely reach the round end); refine the mesh or steepen "
@@ -461,13 +658,26 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
     thk = np.zeros_like(xx, dtype=float)
     runner_thk = np.asarray(cfg.runner_thickness_at_depth(dd), dtype=float)
     thk[in_runner] = runner_thk[in_runner]
-    if cfg.runner_end_thk_mm is not None:
+    if shape == "tab":
+        # tab_end_thk at the edge → tab_thk at tab_ramp_len, on to and inside the disc
+        if cfg.tab_ramp_len_mm > 1e-12:
+            t_tab = np.clip(dd / cfg.tab_ramp_len_mm, 0.0, 1.0)
+        else:
+            t_tab = np.ones_like(dd)
+        tab_thk = cfg.tab_end_thk_mm + (cfg.tab_thk_mm - cfg.tab_end_thk_mm) * t_tab
+        thk[in_runner] = tab_thk[in_runner]
+        thk[in_end] = cfg.tab_thk_mm
+    elif shape == "overlap_tab":
+        thk[in_runner] = cfg.tab_thk_mm
+    elif shape == "thick_tab":
+        thk[in_runner] = cfg.thick_tab_thk_mm
+    elif cfg.runner_end_thk_mm is not None:
         thk[in_end] = cfg.runner_end_thk_mm
 
     # Gate 3 arms: a strip arm_w wide (square to the flank) inside the
     # triangle, past the edge band, outside the round end; a groove only
     # deepens, so the thickness there is max(profile, arm_thk)
-    if cfg.runner_shape == "triangle_arms":
+    if shape == "triangle_arms":
         th = math.radians(cfg.fan_flank_deg)
         dist_flank = (0.5 * cfg.runner_w_mm - ax) * math.sin(th) - dd * math.cos(th)
         in_arm = in_tri & ~in_end & (dd > cfg.runner_edge_flat_mm) & (dist_flank <= cfg.arm_w_mm)
@@ -493,6 +703,11 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
     )
     thk[in_plate] = cfg.frame_thk_mm
     thk[in_inner] = cfg.inner_thk_mm
+    # the gate-side band where the gate thickens it
+    if shape == "overlap_tab":
+        thk[in_band & (ax < 0.5 * cfg.tab_w_mm)] = cfg.lap_thk_mm
+    elif shape == "thick_tab":
+        thk[in_band & (ax < 0.5 * cfg.thick_tab_w_mm)] = cfg.thick_tab_thk_mm
 
     thk[~mask] = 0.0
 
@@ -504,7 +719,11 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
             "triangle": "fan_runner_plate",
             "pentagon": "pentagon_runner_plate",
             "triangle_arms": "arms_runner_plate",
-        }[cfg.runner_shape],
+            "tab": "tab_runner_plate",
+            "overlap_tab": "overlap_tab_plate",
+            "thick_tab": "thick_tab_plate",
+            "direct": "direct_gate_plate",
+        }[shape],
         # ICM squeezes only the t4 body; the rim and the runner are fixed
         compression_mask=in_inner & mask,
         product_mask=in_plate & mask,
@@ -513,6 +732,29 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
         # the gate marker draws this one true-scale circle
         valve_marker_mm=(float(cx), float(y_axis), cfg.gate_d_mm / 2.0),
     )
+
+    if shape == "direct":
+        # --- injection points: a gate disc at each point on the body ---
+        pts = cfg.direct_points_mm
+        for px, py in pts:
+            r2 = (xx - cx - px) ** 2 + (yy - y_edge - py) ** 2
+            sel = (r2 <= (cfg.gate_d_mm / 2.0) ** 2) & mask
+            if not sel.any():
+                sel[np.unravel_index(int(np.argmin(np.where(mask, r2, np.inf))), r2.shape)] = True
+                geom.valve_marker_mm = None
+            for iy, ix in zip(*np.where(sel), strict=True):
+                if (int(iy), int(ix)) not in geom.gates:
+                    geom.gates.append((int(iy), int(ix)))
+        if len(pts) == 1 and geom.valve_marker_mm is not None:
+            geom.valve_marker_mm = (
+                float(cx + pts[0][0]),
+                float(y_edge + pts[0][1]),
+                cfg.gate_d_mm / 2.0,
+            )
+        else:
+            # one marker cannot stand for several gates: draw the gate cells
+            geom.valve_marker_mm = None
+        return geom
 
     # --- injection point: gate disc on the axis ---
     in_gate = r2_axis <= (cfg.gate_d_mm / 2.0) ** 2

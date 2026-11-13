@@ -4,7 +4,7 @@
 [mold-flow-fangate](../mold-flow-fangate) v0.7.3 を起点に、**この図面専用の別リポ**として立ち上げた（fangate 側は触らない）。
 顧客名は書かない（public リポ）。図面 PDF はリポに入れない。
 
-## 現状（2026-09-14、v0.17.0 まで追記）
+## 現状（2026-09-14、v0.18.0 まで追記）
 - 形状仕様は `docs/spec.md`（図面のベクタから実寸で読んだ寸法と、読み取りの根拠）
 - fangate の形状非依存モジュールは `core/` に移植済み（v0.1.0）。`geometry.py` は `Geometry` dataclass と `build_demo_geometry` のみ
 - builder は `core/fan_runner.py`（`FanRunnerPlateConfig` / `build_fan_runner_plate_geometry`、v0.2.0）。既定値が図面。
@@ -59,6 +59,13 @@
   フランクから直角に幅 `arm_w_mm`（9.0）の腕を肉厚 `arm_thk_mm`（3.5）に彫った形。腕はエッジ帯の先から丸端の円の手前まで、
   中の肉厚は `max(Gate 1, arm_thk)`。腕の変数は Gate 1・2 では効かない（Gate 1 の指紋は不変）。UI は Gate 1 の入力欄を共用し、
   腕の 2 つだけ `fg_g3_*`。テストは `tests/test_geometry_gate3.py`（直角の距離を外積で独立に計算して照合）と `tests/test_gate3_ui.py`
+- **ゲート側の形（v0.18.0）**: 製品部は本体（4 mm）と左右・天側の 3 辺の額縁。ゲート側の 1 辺の額縁の帯はランナと一緒に `runner_shape` が決める
+  （**ユーザーの決定 2026-11-13**。圧縮は、どの形でも 4 mm の矩形の本体だけ）。`FAN_SHAPES` = Gate 1・2・3（帯は額縁のまま）、`"tab"` 中央タブ（11/10 の幅 30）、
+  `"overlap_tab"` 重ねタブ（帯はタブの幅だけ `lap_thk_mm`）、`"thick_tab"` 厚いタブ（帯は中央がタブの肉厚、その外は切り取り、角だけ額縁）、
+  `"direct"` 直接ゲート（ランナ無し、`direct_layout` = center / corners4 / diagonal2、同時に開く）。ファン専用の変数はほかの形では検査しない（`_validate_gate_side`）。
+  UI は「ゲート側の形」の 7 択で、形ごとの欄は `app._fan_gate_block` / `_tab_gate_block` / `_thick_tab_gate_block` / `_direct_gate_block`。
+  テストは `tests/test_geometry_gate_side.py` と `tests/test_gate_side_ui.py`。中央スロットルと、バルブを時間差で開く計算は入れていない（ユーザー: 後で）
+- **成形方法（v0.18.0）**: サイドバーの先頭の `molding_method`（`"icm"` 射出圧縮成形＝既定／`"conventional"` 通常成形）。旧 `icm_on` のチェックは無い
 - 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest -n auto --dist loadscope`（CI と同じ。直列だと 8 分、4 並列で 5 分半）
 - Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期
