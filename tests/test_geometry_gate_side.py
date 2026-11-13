@@ -156,6 +156,15 @@ def test_direct_gates_sit_on_the_body_and_there_is_no_runner(layout, points):
         assert g.valve_marker_mm is None
 
 
+def test_a_corner_gate_as_wide_as_its_inset_allows_stays_on_the_body():
+    g = _build(
+        runner_shape="direct", direct_layout="corners4", gate_d_mm=30.0, direct_inset_mm=15.0
+    )
+    gy, gx = np.array(g.gates).T
+    assert np.all(g.compression_mask[gy, gx])
+    assert np.all(g.thickness_mm[gy, gx] == 4.0)
+
+
 def test_a_mesh_coarser_than_the_orifice_still_gives_every_direct_gate_a_cell():
     g = build_fan_runner_plate_geometry(
         FanRunnerPlateConfig(cell_size_mm=4.0, runner_shape="direct", direct_layout="corners4")
@@ -199,6 +208,11 @@ def test_the_fan_runners_fields_are_not_validated_for_the_other_shapes(shape):
             "direct_inset_mm",
         ),
         ({"runner_shape": "direct", "gate_d_mm": 200.0}, "gate_d_mm"),
+        # a corner gate wider than its inset would reach onto the rim (Codex P2 on PR #27)
+        (
+            {"runner_shape": "direct", "direct_layout": "diagonal2", "gate_d_mm": 50.0},
+            "direct_inset_mm",
+        ),
     ],
 )
 def test_bad_gate_side_parameters_are_rejected(kw, match):

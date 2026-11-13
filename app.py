@@ -962,19 +962,22 @@ def _direct_gate_block(v: dict, num) -> None:
         format_func=_DIRECT_LAYOUT_LABELS.__getitem__,
         key="fg_direct_layout",
     )
+    num("gate_d_mm", "ゲート径 φ（バルブゲート）[mm]", 0.5, 50.0, 0.5, fmt="%.1f")
     if v["direct_layout"] != "center":
+        # the orifice stays on the body: the inset is at least the gate's radius
+        inset_lo = v["gate_d_mm"] / 2
         inset_sup = 0.5 * (min(v["plate_w_mm"], v["plate_h_mm"]) - 2 * v["frame_w_mm"])
-        inset_hi = max(math.ceil(inset_sup - 1e-6) - 1.0, 0.0)
+        inset_hi = max(math.ceil(inset_sup - 1e-6) - 1.0, inset_lo)
         v["direct_inset_mm"] = st.number_input(
             "隅からゲートの中心までの距離（縦・横とも）[mm]",
-            min_value=0.0,
+            min_value=float(inset_lo),
             max_value=float(inset_hi),
-            value=min(float(_D.direct_inset_mm), float(inset_hi)),
+            value=min(max(float(_D.direct_inset_mm), float(inset_lo)), float(inset_hi)),
             step=1.0,
             format="%.1f",
             key="fg_direct_inset_mm",
+            help=f"下限はゲートの半径 {inset_lo:.2f} mm（ゲートの穴が本体からはみ出さない）。",
         )
-    num("gate_d_mm", "ゲート径 φ（バルブゲート）[mm]", 0.5, 50.0, 0.5, fmt="%.1f")
     st.caption(
         "ゲートは全部、同じ圧力で同時に開く。射出率は合計で、ゲートの間の配分は流れやすさで決まる。"
         "バルブを時間差で開く計算は入っていない。"

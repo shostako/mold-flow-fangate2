@@ -430,10 +430,12 @@ class FanRunnerPlateConfig:
                 )
             if self.direct_layout != "center":
                 inset_sup = 0.5 * (min(self.plate_w_mm, self.plate_h_mm) - 2 * self.frame_w_mm)
-                if not 0.0 <= self.direct_inset_mm < inset_sup - eps:
+                r_gate = self.gate_d_mm / 2.0
+                if not r_gate - eps <= self.direct_inset_mm < inset_sup - eps:
                     raise ValueError(
-                        f"direct_inset_mm ({self.direct_inset_mm}) must be in [0, {inset_sup:g}) "
-                        f"(half of the body's smaller side)"
+                        f"direct_inset_mm ({self.direct_inset_mm}) must be in [{r_gate:g}, "
+                        f"{inset_sup:g}): at least the gate's radius (gate_d_mm / 2), so the "
+                        f"orifice stays on the body, and under half of the body's smaller side"
                     )
 
     # ----- derived quantities -----
@@ -738,9 +740,12 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
         pts = cfg.direct_points_mm
         for px, py in pts:
             r2 = (xx - cx - px) ** 2 + (yy - y_edge - py) ** 2
-            sel = (r2 <= (cfg.gate_d_mm / 2.0) ** 2) & mask
+            # on the body only: a gate cell on the thin rim would feed the rim
+            # past the step that the melt has to cross to reach it
+            body = in_inner & mask
+            sel = (r2 <= (cfg.gate_d_mm / 2.0) ** 2) & body
             if not sel.any():
-                sel[np.unravel_index(int(np.argmin(np.where(mask, r2, np.inf))), r2.shape)] = True
+                sel[np.unravel_index(int(np.argmin(np.where(body, r2, np.inf))), r2.shape)] = True
                 geom.valve_marker_mm = None
             for iy, ix in zip(*np.where(sel), strict=True):
                 if (int(iy), int(ix)) not in geom.gates:

@@ -124,6 +124,7 @@ def test_direct_gates_offer_three_layouts_and_the_inset_only_for_the_corners():
         at.radio(key="fg_direct_layout").set_value(layout).run()
         assert not at.exception
         assert at.number_input(key="fg_direct_inset_mm").value == 15.0
+        assert at.number_input(key="fg_direct_inset_mm").min == 1.5  # the gate's radius
         at.checkbox(key="two_phase_on").set_value(False).run()
         at.button[0].click().run()
         assert not at.exception
@@ -131,6 +132,17 @@ def test_direct_gates_offer_three_layouts_and_the_inset_only_for_the_corners():
         assert len(geom.gates) == n_gates  # one cell each on the 4 mm test mesh
         t = np.asarray(at.session_state["mfs_result"].fill_time_s)
         assert np.isfinite(t[geom.mask]).all()
+
+
+def test_a_wide_corner_gate_pushes_the_inset_in_instead_of_an_error():
+    at = _app()
+    at.radio(key="fg_runner_shape").set_value("direct").run()
+    at.radio(key="fg_direct_layout").set_value("corners4").run()
+    at.number_input(key="fg_gate_d_mm").set_value(50.0).run()
+    assert not at.exception
+    inset = at.number_input(key="fg_direct_inset_mm")
+    assert inset.min == 25.0 and inset.value == 25.0
+    assert "形状パラメータが不正" not in _texts(at)
 
 
 def test_going_back_to_a_fan_runner_restores_the_balancer():
