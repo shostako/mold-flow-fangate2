@@ -183,15 +183,20 @@ class MeltState:
         filling cell. The cell's own thickness and the flow it carries apply.
         Zero where the feeder passes nothing (solid through).
         """
+        return self._inflow_state(rows, feeders)[0]
+
+    def _inflow_state(self, rows, feeders) -> tuple[np.ndarray, np.ndarray]:
+        """Conductance and layer ``1/η`` of ``rows`` filled with the feeders' melt."""
         rows = np.asarray(rows, dtype=np.intp)
         feeders = np.asarray(feeders, dtype=np.intp)
         if rows.size == 0:
-            return np.zeros(0)
+            return np.zeros(0), np.zeros((0, self.grid.n_z))
         shares = flow_shares(self.flow_state(feeders)[2], self.grid)
         flows = shares.sum(axis=1) > 0.0
         mean = (shares * self.theta[feeders]).sum(axis=1)
         theta_in = np.repeat(mean[:, None], self.grid.n_z, axis=1)
-        return np.where(flows, self.flow_state(rows, theta=theta_in)[0], 0.0)
+        s_in, _, inv_in = self.flow_state(rows, theta=theta_in)
+        return np.where(flows, s_in, 0.0), np.where(flows[:, None], inv_in, 0.0)
 
     # ------------------------------------------------------------------ one step
     def advance(
@@ -218,7 +223,10 @@ class MeltState:
         ``late`` names the faces where the step gave a front cell another
         conductance than its own (:meth:`inflow_conductance`): their indices,
         whether the front cell is the ``b`` side, and that conductance -- the
-        heat the flow leaves on those faces is shared out with it.
+        heat the flow leaves on those faces is shared out with it, and a front
+        cell that took the larger, incoming conductance spreads its heat over
+        its layers as the incoming melt is sheared (its own profile may be
+        solid through, which would drop the heat).
         """
         g = self.grid
         s_before, _, inv_eta = self.flow_state()
@@ -240,12 +248,19 @@ class MeltState:
         self.max_substeps_seen = max(self.max_substeps_seen, self.last_substeps)
         if self.heating and pressure_drop_Pa is not None:
             s_a, s_b = s_before[face_a], s_before[face_b]
+            inv_heat = inv_eta
             if late is not None:
                 k, is_b, s_late = late
                 s_b[k[is_b]] = s_late[is_b]
                 s_a[k[~is_b]] = s_late[~is_b]
+                front = np.where(is_b, face_b[k], face_a[k])
+                feeder = np.where(is_b, face_a[k], face_b[k])
+                took = s_late > s_before[front]
+                if took.any():
+                    inv_heat = inv_eta.copy()
+                    inv_heat[front[took]] = self._inflow_state(front[took], feeder[took])[1]
             heat = face_dissipation(face_a, face_b, s_a, s_b, pressure_drop_Pa, dt_s, self.n)
-            rise = shear_heating(heat, inv_eta, self.cell_m3, self.heat_capacity, self.span, g)
+            rise = shear_heating(heat, inv_heat, self.cell_m3, self.heat_capacity, self.span, g)
             th = th + rise
             self.dissipated_J += float(heat.sum())
             self.heated_J += float(

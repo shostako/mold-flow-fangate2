@@ -67,6 +67,41 @@ def test_inflow_conductance_reads_the_feeders_melt_at_the_cells_own_thickness():
     assert st.inflow_conductance(np.array([], dtype=int), np.array([], dtype=int)).size == 0
 
 
+def test_a_late_fronts_heat_reaches_a_cell_that_was_solid_through():
+    # cell 0 (1 mm) holds a little melt that is solid through; cell 1 (4 mm, full,
+    # fresh melt) pushes into it across the one face
+    def heated(late):
+        st = MeltState(np.array([1e-3, 4e-3]), 2e-3, PMMA, 533.15, 333.15)
+        st.theta[0] = 0.0
+        st.flux_m2_s[:] = 1e-4
+        fa, fb = np.array([1]), np.array([0])
+        moved = np.array([1e-12])
+        if late:
+            s_in = st.inflow_conductance(fb, fa)
+            late = (np.array([0]), np.array([True]), s_in)
+        st.advance(
+            1e-4,
+            fa,
+            fb,
+            moved,
+            np.array([0.1, 1.0]) * st.cell_m3,
+            np.array([False, True]),
+            np.zeros(2),
+            np.array([-5e6]),
+            np.array([True]),
+            late=late or None,
+        )
+        return st
+
+    # its own (solid) profile gives the cell no share of the face's heat ...
+    old = heated(False)
+    assert old.dissipated_J == 0.0
+    # ... the incoming melt's does, and the heat lands in the cell's layers
+    new = heated(True)
+    assert new.dissipated_J > 0.0
+    assert new.heated_J == pytest.approx(new.dissipated_J, rel=1e-6)
+
+
 def _framed_plate(late: bool):
     # a 4 mm plate with a 1 mm rim 8 mm wide all round, gated on the rim: the melt
     # crosses the rim into the plate and stops in the rim to either side; the
