@@ -11,7 +11,7 @@ from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts
 
 OFF_NOTE = "「保圧を解く」を ON にして解析すると出ます"
-ICM_NOTE = "射出圧縮成形 ON の解析では解きません"
+ICM_NOTE = "射出圧縮成形の解析では解きません"
 PVT_NOTE = "pvT データが無いので解けません"
 THIN_NOTE = "薄い所（1 mm の額縁など）が保圧で埋まるかの判定は当てにならない"
 
@@ -27,7 +27,7 @@ def _run(
 ):
     at.radio(key="wall_model").set_value("none")
     at.checkbox(key="two_phase_on").set_value(False)
-    at.checkbox(key="icm_on").set_value(icm)
+    at.radio(key="molding_method").set_value("icm" if icm else "conventional")
     at.checkbox(key="hold_on").set_value(hold).run()
     if hold:
         at.number_input(key="hold_p_mpa").set_value(pressure)

@@ -1,9 +1,16 @@
 """mold-flow-fangate2 core package."""
 
 from .fan_runner import (
+    DIRECT_DEFAULTS,
+    DIRECT_LAYOUTS,
+    FAN_SHAPES,
     GATE2_DEFAULTS,
     GATE3_DEFAULTS,
+    OVERLAP_TAB_DEFAULTS,
     RUNNER_SHAPES,
+    TAB_DEFAULTS,
+    TAB_SHAPES,
+    THICK_TAB_DEFAULTS,
     FanRunnerPlateConfig,
     build_fan_runner_plate_geometry,
 )
@@ -45,6 +52,13 @@ __all__ = [
     "GATE2_DEFAULTS",
     "GATE3_DEFAULTS",
     "RUNNER_SHAPES",
+    "FAN_SHAPES",
+    "DIRECT_LAYOUTS",
+    "TAB_DEFAULTS",
+    "TAB_SHAPES",
+    "OVERLAP_TAB_DEFAULTS",
+    "THICK_TAB_DEFAULTS",
+    "DIRECT_DEFAULTS",
     "build_fan_runner_plate_geometry",
     "HeleShawSolver",
     "MultilayerHeleShawSolver",

@@ -10,14 +10,14 @@ from pathlib import Path
 from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts
 
-ICM_NOTE = "射出圧縮成形 ON の解析では出しません"
+ICM_NOTE = "射出圧縮成形の解析では出しません"
 FRACTION_NOTE = "固化判定 fraction が 0 のときは出しません"
 
 
 def _run(at, *, icm: bool):
     at.radio(key="wall_model").set_value("none")
     at.checkbox(key="two_phase_on").set_value(False)
-    at.checkbox(key="icm_on").set_value(icm).run()
+    at.radio(key="molding_method").set_value("icm" if icm else "conventional").run()
     at.button[0].click().run()
     assert not at.exception
     return at
@@ -66,7 +66,7 @@ def test_zero_solid_fraction_skips_the_estimate_and_keeps_the_fill_result():
     at = _app()
     assert at.radio(key="wall_model").value == "multilayer"
     at.checkbox(key="two_phase_on").set_value(False)
-    at.checkbox(key="icm_on").set_value(False).run()
+    at.radio(key="molding_method").set_value("conventional").run()
     sliders = [s for s in at.slider if str(s.label).startswith("固化判定 fraction")]
     assert len(sliders) == 1
     sliders[0].set_value(0.0).run()

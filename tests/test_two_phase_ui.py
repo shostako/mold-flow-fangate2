@@ -21,7 +21,7 @@ def test_the_defaults_are_two_phase_on_with_icm_and_the_layered_wall_model():
     at = _app()
     assert at.selectbox[0].value == "PMMA"
     assert at.checkbox(key="two_phase_on").value is True
-    assert at.checkbox(key="icm_on").value is True
+    assert at.radio(key="molding_method").value == "icm"
     assert at.radio(key="wall_model").value == "multilayer"
     layers = [s for s in at.slider if str(s.label) == "層数 N"]
     assert len(layers) == 1 and layers[0].value == 7
@@ -43,7 +43,7 @@ def test_switching_the_toggle_off_runs_nothing_two_phase():
 def test_the_two_phase_run_renders_the_map_and_packs_the_zip():
     at = _app()
     at.radio(key="wall_model").set_value("none")
-    at.checkbox(key="icm_on").set_value(True)
+    at.radio(key="molding_method").set_value("icm")
     at.checkbox(key="two_phase_on").set_value(True).run()
     at.number_input(key="two_phase_shot_volume").set_value(80.0)
     at.button[0].click().run()
@@ -105,7 +105,7 @@ def test_the_multilayer_model_rides_the_injection_phase():
     injection phase, and the wall model is recorded with the shot."""
     at = _app()
     at.radio(key="wall_model").set_value("multilayer")
-    at.checkbox(key="icm_on").set_value(True)
+    at.radio(key="molding_method").set_value("icm")
     at.checkbox(key="two_phase_on").set_value(True).run()
     assert "二相解析はスキップされる" not in _texts(at)
     at.number_input(key="two_phase_shot_volume").set_value(80.0)
@@ -133,7 +133,7 @@ def test_the_skin_layer_rides_the_injection_phase():
     carried into the injection phase, and the clock choice is recorded."""
     at = _app()
     at.radio(key="wall_model").set_value("skin")
-    at.checkbox(key="icm_on").set_value(True)
+    at.radio(key="molding_method").set_value("icm")
     at.checkbox(key="two_phase_on").set_value(True).run()
     assert "二相解析はスキップされる" not in _texts(at)
     assert at.radio(key="skin_clock").value == "constant_rate"
@@ -285,7 +285,7 @@ def test_an_edited_shot_volume_survives_toggling_the_analysis_off_and_on():
 def test_the_two_phase_run_ships_a_scrubber_and_its_standalone_player():
     at = _app()
     at.radio(key="wall_model").set_value("none")
-    at.checkbox(key="icm_on").set_value(True)
+    at.radio(key="molding_method").set_value("icm")
     at.checkbox(key="two_phase_on").set_value(True).run()
     at.number_input(key="two_phase_shot_volume").set_value(80.0)
     at.button[0].click().run()

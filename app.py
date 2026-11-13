@@ -21,9 +21,13 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from core import (
+    DIRECT_LAYOUTS,
+    FAN_SHAPES,
     GATE2_DEFAULTS,
     GATE3_DEFAULTS,
+    OVERLAP_TAB_DEFAULTS,
     RUNNER_SHAPES,
+    TAB_SHAPES,
     FanRunnerPlateConfig,
     HeleShawSolver,
     MaterialDB,
@@ -112,9 +116,10 @@ GEOMETRY_SOURCE = "Fan runner plate (parametric)"
 st.set_page_config(page_title="12.3 インチ 額縁プレート 流動解析", layout="wide")
 st.title("12.3 インチ 額縁プレート 流動解析")
 st.caption(
-    "12.3 インチ 額縁肉厚プレート（外周 20 幅 t1.0／内側 t4.0、圧縮は内側だけ）をホットランナーゲート φ3 →"
-    "ランナ（幅 300、R12 丸端。Gate 1 逆三角形／Gate 2 五角形／Gate 3 逆三角形＋腕）で射出圧縮成形するときの樹脂流動を簡易解析するツール。"
-    "ランナ寸法・肉盗み・圧縮条件の方向性検討を、実機評価前の初期検討段階で迅速に行うことを目的とする。"
+    "12.3 インチ 額縁肉厚プレート（外周 20 幅 t1.0／内側 t4.0、圧縮は内側だけ）を、ホットランナーゲート φ3 から"
+    "通常成形または射出圧縮成形するときの樹脂流動を簡易解析するツール。ゲート側の形は、ファン状のランナ（Gate 1・2・3）、"
+    "中央タブ、重ねタブ、厚いタブ、本体への直接ゲートから選ぶ。"
+    "ゲートの形と寸法・肉盗み・成形条件の方向性検討を、実機評価前の初期検討段階で迅速に行うことを目的とする。"
     "商用 CAE（Moldflow 等）の代替を意図したものではない。"
 )
 
@@ -153,7 +158,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "ショートショット時は最後に届くセルが $T_{\\text{fill}}$ を持つ\n"
         "- $T_{\\text{fill}} = V_{\\text{solved}} / Q$ は**定率射出・圧縮なし**のとき"
         "（壁面冷却なし、またはスキン層の「速度制御」時計）。"
-        "射出圧縮 ON なら §7 の等価モデルで短縮され、スキン層の「圧力一定」時計と層別の熱結合は"
+        "射出圧縮成形なら §7 の等価モデルで短縮され、スキン層の「圧力一定」時計と層別の熱結合は"
         "体積重み付き $\\tau$ の比（抵抗比）で再スケールする — スキン層は膨張のみ、層別は層の粘度分布"
         "次第で 1 を挟んでどちらにも動く（そのとき $t_{\\text{fill}}$ は $V/Q$ で割った値ではない）\n"
         "- 多段射出（スクリュー径と射出速度から計算で段数 2 以上）では $Q$ が段ごとに変わるので、"
@@ -260,7 +265,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "固定点の代わりに、射出した量だけ先端を時間で進める。満杯のセルの圧力を解き、"
         "満杯のセルに接する先端のセル（$p = 0$）を流入で満たす。刻みごとに、機械が送った量がちょうどゲートから出ていく。"
         "各セルの層は樹脂が着いた時刻 $t_{\\text{arr}}$ で読む（5-2〜5-4 の式は同じ）。"
-        "到着時刻は因果的に決まるので反復は無い。総充填時間は射出率どおり（体積 ÷ 射出率。射出圧縮 ON では §7 の短縮込み）になる。"
+        "到着時刻は因果的に決まるので反復は無い。総充填時間は射出率どおり（体積 ÷ 射出率。射出圧縮成形では §7 の短縮込み）になる。"
         "「一発で解く」は $\\tau$ の大小で充填の順番を決めるので、厚い所を満たしきってから薄い所に入る。"
         "「時間で追う」は、厚い所が埋まりきる前に、先端が届いた薄い所へも入る。"
     )
@@ -345,7 +350,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "- 割合 $R / s$: そのセルが固まるまでの時間のうち、保圧が届いている割合\n\n"
         "見ていないもの: 保圧中に流れ込む樹脂の熱（入れると $R$ は延びる）、充填中にゲートの近くの壁にできる固化層"
         "（入れると縮む）、固化層で通り道が狭くなること、樹脂の縮み（pvT）。2 つの効果は逆向きなので秒は目安で、"
-        "形どうしの順位と比に使う。射出圧縮成形 ON のときは出さない。"
+        "形どうしの順位と比に使う。射出圧縮成形のときは出さない。"
     )
 
     st.markdown("### 9. 保圧の計算（通常成形で「保圧を解く」が ON のとき）")
@@ -423,7 +428,7 @@ with st.expander("📐 使用している方程式と適用範囲"):
         "この扱いが無いと、先に止まって固まった先端と後から来た先端の合わせ目に、幅 1 マスの線が埋まらずに残る\n"
         "- **保圧へ**: VP 切替の時点の状態をそのまま保圧の計算（§9）へ渡し、保圧中も同じ 3 つの効果を刻みごとに解く\n\n"
         "入っていないもの: 面内（板の広がる向き）の熱伝導、金型の中の温度の分布（金型の表面は一様に金型温度）、"
-        "射出圧縮成形との組み合わせ（射出圧縮 ON では到達時刻から読む方で解く）。"
+        "射出圧縮成形との組み合わせ（射出圧縮成形では到達時刻から読む方で解く）。"
         "格子は 2 mm 以下で使う。4 mm 格子は軸に対して左右対称に切れず、流れが集まる通り道が片側に寄って、結果が左右で違って出る。"
         "熱伝導と運びは刻みの中で小分けにして解く（1 刻みにマスを通り過ぎる流れで冷えすぎないように）。\n\n"
         "**薄いゲート（入口 1 mm のファン、2 mm のタブなど）の読み方**: 保圧のあいだ流れ続ける樹脂が熱を運ぶので、"
@@ -515,9 +520,9 @@ material_keys = list(db.keys())
 
 # 「保圧が届く時間」を出さないときに結果ペインへ出す理由
 PACK_SKIP_ICM = (
-    "射出圧縮成形 ON の解析では出しません（圧縮が保圧の役をし、"
+    "射出圧縮成形の解析では出しません（圧縮が保圧の役をし、"
     "キャビティの厚さも充填中に変わるため）。"
-    "通常成形（圧縮成形 OFF）で解析すると出ます。"
+    "成形方法を通常成形にして解析すると出ます。"
 )
 PACK_SKIP_FRACTION = (
     "固化判定 fraction が 0 のときは出しません（厚さの中心が金型温度まで下がる時刻は"
@@ -528,8 +533,7 @@ PACK_SKIP_FRACTION = (
 # 保圧の計算を解かないときに結果ペインへ出す理由
 HOLD_SKIP_OFF = "サイドバー「保圧（通常成形）」で「保圧を解く」を ON にして解析すると出ます。"
 HOLD_SKIP_ICM = (
-    "射出圧縮成形 ON の解析では解きません（圧縮が保圧の役をし、"
-    "キャビティの厚さも充填中に変わるため）。"
+    "射出圧縮成形の解析では解きません（圧縮が保圧の役をし、キャビティの厚さも充填中に変わるため）。"
 )
 HOLD_SKIP_PVT = "この材料には pvT データが無いので解けません（pvT があるのは PMMA）。"
 HOLD_SKIP_SHORT = "充填が全体に届いていない（ショートショット）ので解きません。"
@@ -549,10 +553,29 @@ HOLD_MAX_CELLS = 20_000
 _D = FanRunnerPlateConfig()  # Gate 1 = the drawing (docs/spec.md)
 _D2 = FanRunnerPlateConfig(**GATE2_DEFAULTS)  # Gate 2 = the pentagon (docs/spec.md)
 _D3 = FanRunnerPlateConfig(**GATE3_DEFAULTS)  # Gate 3 = Gate 1 + flank arms (docs/spec.md)
+_DOV = FanRunnerPlateConfig(**OVERLAP_TAB_DEFAULTS)  # overlap tab (the t3.5 drawing)
 _SHAPE_LABELS = {
     "triangle": "Gate 1（逆三角形・客先図面）",
     "pentagon": "Gate 2（五角形・側辺つき）",
     "triangle_arms": "Gate 3（逆三角形＋フランク沿いの腕）",
+    "tab": "中央タブ（幅の狭いゲート、額縁から入れる）",
+    "overlap_tab": "重ねタブ（額縁の下に重ねて本体へつなぐ）",
+    "thick_tab": "厚いタブ（額縁を切り、本体の肉厚でつなぐ）",
+    "direct": "直接ゲート（本体にバルブゲート）",
+}
+#: 成形方法: the sidebar's first choice
+MOLDING_METHODS = ("icm", "conventional")
+_MOLDING_LABELS = {"icm": "射出圧縮成形", "conventional": "通常成形"}
+_RUNNER_EXPANDER = "ゲートブロック（ランナ、製品エッジ直結）"
+_GATE_EXPANDER = dict.fromkeys(RUNNER_SHAPES, _RUNNER_EXPANDER) | {
+    "direct": "直接ゲート（位置と径）"
+}
+# what each shape does to the gate-side band of the rim (the fourth side)
+_RIM_KEPT = "ゲート側の額縁の帯は、ほかの 3 辺と同じ額縁のまま。"
+_GATE_SIDE_NOTE = dict.fromkeys(RUNNER_SHAPES, _RIM_KEPT) | {
+    "overlap_tab": "ゲート側の額縁の帯は、タブの幅だけ厚くなる（額縁の下にタブが重なる）。ほかは額縁のまま。",
+    "thick_tab": "ゲート側の額縁の帯は、中央がタブの肉厚、その外は切り取り（樹脂が入らない）、角だけ額縁。",
+    "direct": "ランナは無い。" + _RIM_KEPT,
 }
 
 
@@ -576,194 +599,229 @@ def _fan_runner_sidebar() -> dict:
         )
 
     v["runner_shape"] = st.radio(
-        "ゲート形状",
+        "ゲート側の形",
         RUNNER_SHAPES,
         format_func=_SHAPE_LABELS.__getitem__,
         key="fg_runner_shape",
         help="Gate 1 は客先図面の逆三角形（フランク 14°）。Gate 2 は製品エッジの両端から側辺を"
         "下ろし、斜辺を丸端の円に接して結ぶ五角形。Gate 3 は Gate 1 のフランクに沿って厚い溝"
-        "（腕）を彫った形。肉厚の決め方（エッジ帯・傾斜・円の外・円の中）と肉盗みは全部の形で共通。",
+        "（腕）を彫った形。この 3 つは肉厚の決め方（エッジ帯・傾斜・円の外・円の中）と肉盗みが共通。"
+        "中央タブは、額縁の中央に幅の狭いタブをつなぐ形。重ねタブは、そのタブを額縁の下に重ねて本体の段まで"
+        "伸ばす形。厚いタブは、ゲート側の額縁を切り、中央だけ本体の肉厚でつなぐ形。"
+        "直接ゲートは、ランナを使わず本体にバルブゲートを置く形。",
     )
     gate2 = v["runner_shape"] == "pentagon"
     gate3 = v["runner_shape"] == "triangle_arms"
     with st.expander("製品（額縁プレート）", expanded=False):
-        st.caption("圧縮されるのは内側の厚肉部だけ。額縁とランナは固定。")
+        st.caption(
+            "製品部は、内側の厚肉部（本体）と、左右・天側の 3 辺の額縁。ゲート側の 1 辺の額縁の帯は"
+            "「ゲート側の形」で決まる。圧縮されるのは本体だけで、額縁・ゲート側の帯・ランナは固定。"
+        )
         num("plate_w_mm", "製品幅（長辺、ランナ側）[mm]", 50.0, 600.0, 1.0)
         num("plate_h_mm", "製品奥行 [mm]", 30.0, 600.0, 1.0)
         num("frame_w_mm", "額縁幅 [mm]", 0.0, 100.0, 0.5, fmt="%.1f")
         num("frame_thk_mm", "額縁肉厚 [mm]", 0.1, 10.0, 0.05)
         num("inner_thk_mm", "内側肉厚（圧縮部）[mm]", 0.1, 10.0, 0.05)
-    with st.expander("ゲートブロック（ランナ、製品エッジ直結）", expanded=False):
-        num("runner_w_mm", "ランナ幅（製品エッジ）[mm]", 5.0, 600.0, 1.0, fmt="%.1f")
-        if gate2:
-            v["fan_flank_deg"] = float(_D.fan_flank_deg)
-            v["side_len_mm"] = st.number_input(
-                "側辺の長さ（額縁の下端＝製品エッジから）[mm]",
-                min_value=0.0,
-                max_value=300.0,
-                value=float(_D2.side_len_mm),
-                step=1.0,
-                format="%.1f",
-                key="fg_side_len_mm",
-            )
+    fan = v["runner_shape"] in FAN_SHAPES
+    with st.expander(_GATE_EXPANDER[v["runner_shape"]], expanded=False):
+        st.caption(_GATE_SIDE_NOTE[v["runner_shape"]])
+        if fan:
+            _fan_gate_block(v, num, gate2, gate3)
+        elif v["runner_shape"] in TAB_SHAPES:
+            _tab_gate_block(v, num)
+        elif v["runner_shape"] == "thick_tab":
+            _thick_tab_gate_block(v, num)
         else:
-            num(
-                "fan_flank_deg",
-                "フランク角（製品エッジ線に対して）[deg]",
-                1.0,
-                89.0,
-                0.5,
-                fmt="%.1f",
-            )
-            v["side_len_mm"] = float(_D.side_len_mm)
-        num("runner_len_mm", "ランナ長（製品エッジ → ゲート軸）[mm]", 1.0, 300.0, 1.0, fmt="%.1f")
-        num("runner_end_d_mm", "丸端の径 φ（ゲート軸中心）[mm]", 1.0, 200.0, 1.0, fmt="%.1f")
-        r_top = v["runner_len_mm"] - v["runner_end_d_mm"] / 2
-        if gate2:
-            _g2 = FanRunnerPlateConfig(
-                runner_shape="pentagon",
-                runner_w_mm=v["runner_w_mm"],
-                side_len_mm=v["side_len_mm"],
-                runner_len_mm=v["runner_len_mm"],
-                runner_end_d_mm=v["runner_end_d_mm"],
-            )
-            _cap = (
-                f"額縁込みの側辺 h = {v['frame_w_mm'] + v['side_len_mm']:.1f} mm"
-                f"（額縁 {v['frame_w_mm']:.1f} ＋ 側辺 {v['side_len_mm']:.1f}）。"
-            )
-            try:
-                _g2.validate()
-            except ValueError:
-                pass  # the builder reports it; the caption only adds numbers when they exist
-            else:
-                _xt, _dt = _g2.pentagon_tangent_mm
-                _cap += (
-                    f"斜辺は丸端の円に接する（傾き {_g2.pentagon_slant_deg:.1f}°、接点は軸から "
-                    f"±{_xt:.1f} mm・深さ {_dt:.1f} mm）。側辺は丸端の下端 "
-                    f"{v['runner_len_mm'] + v['runner_end_d_mm'] / 2:.1f} mm より浅いこと。"
-                )
-            st.caption(_cap)
-        else:
-            _apex = FanRunnerPlateConfig(
-                runner_w_mm=v["runner_w_mm"], fan_flank_deg=v["fan_flank_deg"]
-            ).apex_depth_mm
-            st.caption(
-                f"フランクの延長が軸で交わる深さ {_apex:.1f} mm（丸端の上端 "
-                f"{r_top:.1f} mm より深いこと）。"
-                "図面ではフランクが丸端の円に交差する（接線ではない）。"
-            )
-        st.markdown("**肉厚（製品エッジからの深さで決まる）**")
-        num("runner_edge_thk_mm", "エッジ帯の肉厚 [mm]", 0.05, 10.0, 0.05)
+            _direct_gate_block(v, num)
+    if fan:
+        _balancer_block(v)
+    else:
+        v["balancer_on"] = False
+    with st.expander("メッシュ", expanded=False):
+        v["cell_size_mm"] = st.slider(
+            "メッシュ粗さ [mm/cell]", 0.5, 4.0, float(_D.cell_size_mm), 0.25, key="fg_cell_size_mm"
+        )
+        st.caption("既定 1.0 mm で約 85k セル。0.5 mm は 4 倍重い。")
+        v["pad_mm"] = float(_D.pad_mm)
+    return v
+
+
+def _fan_gate_block(v: dict, num, gate2: bool, gate3: bool) -> None:
+    """The fan runners' widgets (Gate 1 / 2 / 3): silhouette, thickness profile, arms."""
+    num("runner_w_mm", "ランナ幅（製品エッジ）[mm]", 5.0, 600.0, 1.0, fmt="%.1f")
+    if gate2:
+        v["fan_flank_deg"] = float(_D.fan_flank_deg)
+        v["side_len_mm"] = st.number_input(
+            "側辺の長さ（額縁の下端＝製品エッジから）[mm]",
+            min_value=0.0,
+            max_value=300.0,
+            value=float(_D2.side_len_mm),
+            step=1.0,
+            format="%.1f",
+            key="fg_side_len_mm",
+        )
+    else:
         num(
-            "runner_edge_flat_mm",
-            "エッジ帯の幅（製品エッジから。0 で帯なし）[mm]",
-            0.0,
-            50.0,
+            "fan_flank_deg",
+            "フランク角（製品エッジ線に対して）[deg]",
+            1.0,
+            89.0,
             0.5,
             fmt="%.1f",
         )
-        v["runner_ramp_on"] = st.checkbox(
-            "傾斜を付ける（エッジ帯の肉厚 → 円の外の肉厚 t_o）",
-            value=_D.runner_ramp_on,
-            key="fg_runner_ramp_on",
-            help="外すと、エッジ帯の先で段差になって t_o に上がる。エッジ帯の幅が 0 なら製品エッジから t_o。",
+        v["side_len_mm"] = float(_D.side_len_mm)
+    num("runner_len_mm", "ランナ長（製品エッジ → ゲート軸）[mm]", 1.0, 300.0, 1.0, fmt="%.1f")
+    num("runner_end_d_mm", "丸端の径 φ（ゲート軸中心）[mm]", 1.0, 200.0, 1.0, fmt="%.1f")
+    r_top = v["runner_len_mm"] - v["runner_end_d_mm"] / 2
+    if gate2:
+        _g2 = FanRunnerPlateConfig(
+            runner_shape="pentagon",
+            runner_w_mm=v["runner_w_mm"],
+            side_len_mm=v["side_len_mm"],
+            runner_len_mm=v["runner_len_mm"],
+            runner_end_d_mm=v["runner_end_d_mm"],
         )
-        if not v["runner_ramp_on"]:
-            v["runner_ramp_end_mm"] = (_D2 if gate2 else _D).runner_ramp_end_mm
-        elif gate2:
-            follow = st.checkbox(
-                "傾斜の開始位置を丸端の円の上端に合わせる",
-                value=True,
-                key="fg_g2_ramp_at_end_top",
-                help="ランナ長と丸端の径を変えると開始位置も動く。外すと深さを数値で指定する。",
-            )
-            if follow:
-                v["runner_ramp_end_mm"] = None
-                st.caption(f"傾斜の開始位置（下限）= {r_top:.1f} mm（丸端の円の上端）")
-            else:
-                v["runner_ramp_end_mm"] = st.number_input(
-                    "傾斜の開始位置（下限、製品エッジからの深さ）[mm]",
-                    min_value=0.0,
-                    max_value=300.0,
-                    value=float(max(r_top, 0.0)),
-                    step=1.0,
-                    format="%.1f",
-                    key="fg_g2_runner_ramp_end_mm",
-                )
+        _cap = (
+            f"額縁込みの側辺 h = {v['frame_w_mm'] + v['side_len_mm']:.1f} mm"
+            f"（額縁 {v['frame_w_mm']:.1f} ＋ 側辺 {v['side_len_mm']:.1f}）。"
+        )
+        try:
+            _g2.validate()
+        except ValueError:
+            pass  # the builder reports it; the caption only adds numbers when they exist
         else:
-            num(
-                "runner_ramp_end_mm",
+            _xt, _dt = _g2.pentagon_tangent_mm
+            _cap += (
+                f"斜辺は丸端の円に接する（傾き {_g2.pentagon_slant_deg:.1f}°、接点は軸から "
+                f"±{_xt:.1f} mm・深さ {_dt:.1f} mm）。側辺は丸端の下端 "
+                f"{v['runner_len_mm'] + v['runner_end_d_mm'] / 2:.1f} mm より浅いこと。"
+            )
+        st.caption(_cap)
+    else:
+        _apex = FanRunnerPlateConfig(
+            runner_w_mm=v["runner_w_mm"], fan_flank_deg=v["fan_flank_deg"]
+        ).apex_depth_mm
+        st.caption(
+            f"フランクの延長が軸で交わる深さ {_apex:.1f} mm（丸端の上端 "
+            f"{r_top:.1f} mm より深いこと）。"
+            "図面ではフランクが丸端の円に交差する（接線ではない）。"
+        )
+    st.markdown("**肉厚（製品エッジからの深さで決まる）**")
+    num("runner_edge_thk_mm", "エッジ帯の肉厚 [mm]", 0.05, 10.0, 0.05)
+    num(
+        "runner_edge_flat_mm",
+        "エッジ帯の幅（製品エッジから。0 で帯なし）[mm]",
+        0.0,
+        50.0,
+        0.5,
+        fmt="%.1f",
+    )
+    v["runner_ramp_on"] = st.checkbox(
+        "傾斜を付ける（エッジ帯の肉厚 → 円の外の肉厚 t_o）",
+        value=_D.runner_ramp_on,
+        key="fg_runner_ramp_on",
+        help="外すと、エッジ帯の先で段差になって t_o に上がる。エッジ帯の幅が 0 なら製品エッジから t_o。",
+    )
+    if not v["runner_ramp_on"]:
+        v["runner_ramp_end_mm"] = (_D2 if gate2 else _D).runner_ramp_end_mm
+    elif gate2:
+        follow = st.checkbox(
+            "傾斜の開始位置を丸端の円の上端に合わせる",
+            value=True,
+            key="fg_g2_ramp_at_end_top",
+            help="ランナ長と丸端の径を変えると開始位置も動く。外すと深さを数値で指定する。",
+        )
+        if follow:
+            v["runner_ramp_end_mm"] = None
+            st.caption(f"傾斜の開始位置（下限）= {r_top:.1f} mm（丸端の円の上端）")
+        else:
+            v["runner_ramp_end_mm"] = st.number_input(
                 "傾斜の開始位置（下限、製品エッジからの深さ）[mm]",
-                0.0,
-                300.0,
-                1.0,
-                fmt="%.1f",
-            )
-        num("runner_thk_mm", "円の外の肉厚 t_o（傾斜ありは厚い側）[mm]", 0.1, 10.0, 0.05)
-        if gate2:
-            v["runner_end_thk_mm"] = st.number_input(
-                "円の深さ（丸端の円の中の肉厚）[mm]",
-                min_value=0.1,
-                max_value=10.0,
-                value=float(_D2.runner_end_thk_mm),
-                step=0.05,
-                format="%.2f",
-                key="fg_g2_runner_end_thk_mm",
-            )
-        elif st.checkbox(
-            "丸端の円の中を別の肉厚にする",
-            value=False,
-            key="fg_g1_end_thk_on",
-            help="外したままなら、円の中も上の深さの決め方に従う（客先図面のとおり）。",
-        ):
-            v["runner_end_thk_mm"] = st.number_input(
-                "円の深さ（丸端の円の中の肉厚）[mm]",
-                min_value=0.1,
-                max_value=10.0,
-                value=float(_D2.runner_end_thk_mm),
-                step=0.05,
-                format="%.2f",
-                key="fg_g1_runner_end_thk_mm",
-            )
-        else:
-            v["runner_end_thk_mm"] = None
-        if gate3:
-            st.markdown("**腕（フランク沿いの厚い溝）**")
-            # the bound comes from the config itself (single source with validate())
-            _w_sup = FanRunnerPlateConfig(
-                runner_w_mm=v["runner_w_mm"], fan_flank_deg=v["fan_flank_deg"]
-            ).arm_w_sup_mm
-            # the largest 0.5 multiple that validate() accepts, i.e. strictly below
-            # the bound minus its 1e-6 tolerance: 36.29 → 36.0, 75.0 (sin 30°) → 74.5
-            # (Codex P2 on PR #14: flooring after subtracting a step lost 36.0)
-            _w_hi = max((math.ceil((_w_sup - 1e-6) * 2.0) - 1) / 2.0, 0.5)
-            v["arm_w_mm"] = st.number_input(
-                "腕の幅（フランクから直角に測る）[mm]",
-                min_value=0.5,
-                max_value=float(_w_hi),
-                value=min(float(_D3.arm_w_mm), float(_w_hi)),
-                step=0.5,
+                min_value=0.0,
+                max_value=300.0,
+                value=float(max(r_top, 0.0)),
+                step=1.0,
                 format="%.1f",
-                key="fg_g3_arm_w_mm",
+                key="fg_g2_runner_ramp_end_mm",
             )
-            v["arm_thk_mm"] = st.number_input(
-                "腕の肉厚（エッジ帯より厚く）[mm]",
-                min_value=0.1,
-                max_value=10.0,
-                value=float(_D3.arm_thk_mm),
-                step=0.05,
-                format="%.2f",
-                key="fg_g3_arm_thk_mm",
-            )
-            st.caption(
-                "腕はエッジ帯の先から丸端の円の手前まで、両方のフランクに沿って彫る。"
-                "溝は削るだけなので、今の肉厚より薄い所は変えない。エッジ帯と丸端の円の肉厚は"
-                f"そのまま。腕の幅はフランクから軸までの距離 {_w_sup:.1f} mm 未満。"
-            )
-        else:
-            v["arm_w_mm"] = float(_D.arm_w_mm)
-            v["arm_thk_mm"] = float(_D.arm_thk_mm)
-        num("gate_d_mm", "ゲート径 φ（ホットランナー、射出点）[mm]", 0.5, 50.0, 0.5, fmt="%.1f")
+    else:
+        num(
+            "runner_ramp_end_mm",
+            "傾斜の開始位置（下限、製品エッジからの深さ）[mm]",
+            0.0,
+            300.0,
+            1.0,
+            fmt="%.1f",
+        )
+    num("runner_thk_mm", "円の外の肉厚 t_o（傾斜ありは厚い側）[mm]", 0.1, 10.0, 0.05)
+    if gate2:
+        v["runner_end_thk_mm"] = st.number_input(
+            "円の深さ（丸端の円の中の肉厚）[mm]",
+            min_value=0.1,
+            max_value=10.0,
+            value=float(_D2.runner_end_thk_mm),
+            step=0.05,
+            format="%.2f",
+            key="fg_g2_runner_end_thk_mm",
+        )
+    elif st.checkbox(
+        "丸端の円の中を別の肉厚にする",
+        value=False,
+        key="fg_g1_end_thk_on",
+        help="外したままなら、円の中も上の深さの決め方に従う（客先図面のとおり）。",
+    ):
+        v["runner_end_thk_mm"] = st.number_input(
+            "円の深さ（丸端の円の中の肉厚）[mm]",
+            min_value=0.1,
+            max_value=10.0,
+            value=float(_D2.runner_end_thk_mm),
+            step=0.05,
+            format="%.2f",
+            key="fg_g1_runner_end_thk_mm",
+        )
+    else:
+        v["runner_end_thk_mm"] = None
+    if gate3:
+        st.markdown("**腕（フランク沿いの厚い溝）**")
+        # the bound comes from the config itself (single source with validate())
+        _w_sup = FanRunnerPlateConfig(
+            runner_w_mm=v["runner_w_mm"], fan_flank_deg=v["fan_flank_deg"]
+        ).arm_w_sup_mm
+        # the largest 0.5 multiple that validate() accepts, i.e. strictly below
+        # the bound minus its 1e-6 tolerance: 36.29 → 36.0, 75.0 (sin 30°) → 74.5
+        # (Codex P2 on PR #14: flooring after subtracting a step lost 36.0)
+        _w_hi = max((math.ceil((_w_sup - 1e-6) * 2.0) - 1) / 2.0, 0.5)
+        v["arm_w_mm"] = st.number_input(
+            "腕の幅（フランクから直角に測る）[mm]",
+            min_value=0.5,
+            max_value=float(_w_hi),
+            value=min(float(_D3.arm_w_mm), float(_w_hi)),
+            step=0.5,
+            format="%.1f",
+            key="fg_g3_arm_w_mm",
+        )
+        v["arm_thk_mm"] = st.number_input(
+            "腕の肉厚（エッジ帯より厚く）[mm]",
+            min_value=0.1,
+            max_value=10.0,
+            value=float(_D3.arm_thk_mm),
+            step=0.05,
+            format="%.2f",
+            key="fg_g3_arm_thk_mm",
+        )
+        st.caption(
+            "腕はエッジ帯の先から丸端の円の手前まで、両方のフランクに沿って彫る。"
+            "溝は削るだけなので、今の肉厚より薄い所は変えない。エッジ帯と丸端の円の肉厚は"
+            f"そのまま。腕の幅はフランクから軸までの距離 {_w_sup:.1f} mm 未満。"
+        )
+    else:
+        v["arm_w_mm"] = float(_D.arm_w_mm)
+        v["arm_thk_mm"] = float(_D.arm_thk_mm)
+    num("gate_d_mm", "ゲート径 φ（ホットランナー、射出点）[mm]", 0.5, 50.0, 0.5, fmt="%.1f")
+
+
+def _balancer_block(v: dict) -> None:
+    """The balancer's widgets (fan runners only)."""
     with st.expander("肉盗み（▽ フローバランサー）", expanded=False):
         v["balancer_on"] = st.checkbox(
             "肉盗みを有効化（製品エッジに底辺を置く逆三角形の薄肉部）",
@@ -818,13 +876,112 @@ def _fan_runner_sidebar() -> dict:
         else:
             for f in ("balancer_w_mm", "balancer_h_mm", "balancer_thk_mm"):
                 v[f] = float(getattr(_D, f))
-    with st.expander("メッシュ", expanded=False):
-        v["cell_size_mm"] = st.slider(
-            "メッシュ粗さ [mm/cell]", 0.5, 4.0, float(_D.cell_size_mm), 0.25, key="fg_cell_size_mm"
+
+
+def _runner_end_inputs(v: dict, num) -> None:
+    """Runner length, round end and gate orifice: shared by the tabs."""
+    num("runner_len_mm", "ランナ長（製品エッジ → ゲート軸）[mm]", 1.0, 300.0, 1.0, fmt="%.1f")
+    num("runner_end_d_mm", "丸端の径 φ（ゲート軸中心）[mm]", 1.0, 200.0, 1.0, fmt="%.1f")
+    num("gate_d_mm", "ゲート径 φ（ホットランナー、射出点）[mm]", 0.5, 50.0, 0.5, fmt="%.1f")
+
+
+def _tab_gate_block(v: dict, num) -> None:
+    """Centre tab and overlap tab: a trapezoid from the edge line to the round end."""
+    overlap = v["runner_shape"] == "overlap_tab"
+    num("tab_w_mm", "タブの幅（製品エッジ）[mm]", 1.0, 600.0, 1.0, fmt="%.1f")
+    if overlap:
+        v["tab_thk_mm"] = st.number_input(
+            "タブの肉厚（製品の外、均一）[mm]",
+            min_value=0.1,
+            max_value=10.0,
+            value=float(_DOV.tab_thk_mm),
+            step=0.05,
+            format="%.2f",
+            key="fg_ov_tab_thk_mm",
         )
-        st.caption("既定 1.0 mm で約 85k セル。0.5 mm は 4 倍重い。")
-        v["pad_mm"] = float(_D.pad_mm)
-    return v
+        v["lap_thk_mm"] = st.number_input(
+            "額縁に重なる所の肉厚（額縁＋タブ）[mm]",
+            min_value=float(v["frame_thk_mm"]),
+            max_value=max(10.0, float(v["frame_thk_mm"])),
+            value=max(float(_DOV.lap_thk_mm), float(v["frame_thk_mm"])),
+            step=0.05,
+            format="%.2f",
+            key="fg_ov_lap_thk_mm",
+        )
+        _runner_end_inputs(v, num)
+        return
+    num("tab_end_thk_mm", "入口の肉厚（製品エッジ）[mm]", 0.1, 10.0, 0.05)
+    num("tab_thk_mm", "奥の肉厚（ゲート付近と丸端の中）[mm]", 0.1, 10.0, 0.05)
+    _runner_end_inputs(v, num)
+    ramp_max = max(v["runner_len_mm"] - v["runner_end_d_mm"] / 2, 0.0)
+    v["tab_ramp_len_mm"] = st.number_input(
+        "傾斜の長さ（製品エッジから、奥の肉厚になるまで）[mm]",
+        min_value=0.0,
+        max_value=float(ramp_max),
+        value=min(float(_D.tab_ramp_len_mm), float(ramp_max)),
+        step=1.0,
+        format="%.1f",
+        key="fg_tab_ramp_len_mm",
+        help=f"0 で段差。上限は丸端の円の上端までの {ramp_max:.1f} mm（ランナ長 − 丸端の半径）。",
+    )
+
+
+def _thick_tab_gate_block(v: dict, num) -> None:
+    """Thick tab: the gate-side band is cut away but for the tab and the corners."""
+    num("thick_tab_w_mm", "タブの幅（製品エッジ）[mm]", 1.0, 600.0, 1.0, fmt="%.1f")
+    num("thick_tab_thk_mm", "タブの肉厚（ランナと、額縁の帯の中央）[mm]", 0.1, 10.0, 0.05)
+    num(
+        "corner_keep_mm",
+        "角に残す額縁の長さ（本体の横の縁から内側へ）[mm]",
+        0.0,
+        300.0,
+        1.0,
+        fmt="%.1f",
+    )
+    inner_half = 0.5 * v["plate_w_mm"] - v["frame_w_mm"]
+    cut = inner_half - v["corner_keep_mm"] - 0.5 * v["thick_tab_w_mm"]
+    st.caption(
+        f"額縁の帯を切る長さは、片側 {max(cut, 0.0):.1f} mm（タブの端から、角に残す額縁まで）。"
+        + ("" if cut > 0 else "切る所が無く、帯はタブと額縁でつながる。")
+    )
+    _runner_end_inputs(v, num)
+
+
+_DIRECT_LAYOUT_LABELS = {
+    "center": "本体の中心に 1 点",
+    "corners4": "本体の 4 つの隅に 1 点ずつ",
+    "diagonal2": "対角の 2 つの隅に 1 点ずつ",
+}
+
+
+def _direct_gate_block(v: dict, num) -> None:
+    """Direct gates: valve gates on the body, no runner."""
+    v["direct_layout"] = st.radio(
+        "ゲートの位置",
+        DIRECT_LAYOUTS,
+        format_func=_DIRECT_LAYOUT_LABELS.__getitem__,
+        key="fg_direct_layout",
+    )
+    num("gate_d_mm", "ゲート径 φ（バルブゲート）[mm]", 0.5, 50.0, 0.5, fmt="%.1f")
+    if v["direct_layout"] != "center":
+        # the orifice stays on the body: the inset is at least the gate's radius
+        inset_lo = v["gate_d_mm"] / 2
+        inset_sup = 0.5 * (min(v["plate_w_mm"], v["plate_h_mm"]) - 2 * v["frame_w_mm"])
+        inset_hi = max(math.ceil(inset_sup - 1e-6) - 1.0, inset_lo)
+        v["direct_inset_mm"] = st.number_input(
+            "隅からゲートの中心までの距離（縦・横とも）[mm]",
+            min_value=float(inset_lo),
+            max_value=float(inset_hi),
+            value=min(max(float(_D.direct_inset_mm), float(inset_lo)), float(inset_hi)),
+            step=1.0,
+            format="%.1f",
+            key="fg_direct_inset_mm",
+            help=f"下限はゲートの半径 {inset_lo:.2f} mm（ゲートの穴が本体からはみ出さない）。",
+        )
+    st.caption(
+        "ゲートは全部、同じ圧力で同時に開く。射出率は合計で、ゲートの間の配分は流れやすさで決まる。"
+        "バルブを時間差で開く計算は入っていない。"
+    )
 
 
 #: Internal field names of ``InjectionProfile`` mapped to the sidebar's own
@@ -1077,6 +1234,17 @@ with st.sidebar:
         st.header("成形品設計")
     with _run_col:
         do_run = st.button("解析実行", type="primary", use_container_width=True)
+    molding_method = st.radio(
+        "成形方法",
+        MOLDING_METHODS,
+        format_func=_MOLDING_LABELS.__getitem__,
+        key="molding_method",
+        horizontal=True,
+        help="射出圧縮成形は、型を少し開いたまま充填して、あとから閉じる。圧縮されるのは内側の厚肉部（本体）だけで、"
+        "額縁・ゲート側の形・ランナは固定。条件は下の「射出圧縮成形 (ICM)」で決める。"
+        "通常成形は型を閉じたまま充填する。保圧の計算と、層の温度を刻みごとに解く充填は通常成形だけ。",
+    )
+    icm = molding_method == "icm"
     fan_inputs = _fan_runner_sidebar()
 
     with st.expander("材料", expanded=False):
@@ -1262,7 +1430,7 @@ with st.sidebar:
                     "一発で解く方は、充填の順番を 1 回の楕円型の計算（τ）で決める。速いが、"
                     "ランナの厚い所を満たしきってから薄い所に入る癖がある。\n"
                     "時間で追う方は、射出した量だけ先端を時間で進める。厚い所が埋まりきる前に、"
-                    "先端が届いた薄い所へも入り始める。総充填時間は射出率どおり（体積 ÷ 射出率。射出圧縮 ON ではその短縮込み）になる。"
+                    "先端が届いた薄い所へも入り始める。総充填時間は射出率どおり（体積 ÷ 射出率。射出圧縮成形ではその短縮込み）になる。"
                     "mold-flow-sim の別の製品では、ショートショットの写真の到達線に近づいた"
                     "（sim v0.62.0 の変更履歴）。本リポの形状の写真とはまだ照合していない。"
                     "計算は 1.0 mm で主解析と二相を合わせて 8〜10 分、一発で解く方は 1〜2 分。"
@@ -1283,7 +1451,7 @@ with st.sidebar:
                     "energy": "刻みごとに解く: 厚さ方向の温度を状態として持ち、流れが熱を運ぶ",
                 }[m],
                 help=(
-                    "時間で追う解き方のときだけ選べる。射出圧縮 ON のときは到達時刻から読む方で解く。\n"
+                    "時間で追う解き方のときだけ選べる。射出圧縮成形のときは到達時刻から読む方で解く。\n"
                     "到達時刻から読む方は、厚い所を通ってきた熱い樹脂が薄い所に入っても、最初からその薄い肉厚で"
                     "冷えてきたものとして扱う。1 mm の額縁のような薄い所を冷たく見すぎる。\n"
                     "刻みごとに解く方は、厚さ方向 16 層の温度を毎刻み解く（壁への熱伝導、流れが運ぶ熱、剪断発熱）。"
@@ -1424,9 +1592,8 @@ with st.sidebar:
         else:
             shear_heating_enabled = False
 
-    with st.expander("射出圧縮成形 (ICM)", expanded=False):
-        icm = st.checkbox("圧縮成形ON", value=True, key="icm_on")
-        if icm:
+    if icm:
+        with st.expander("射出圧縮成形 (ICM)", expanded=False):
             # ストローク (絶対加算) モードに統一。圧縮 mask 内の全セルに同じ絶対量を加算
             # するので段差プレートでも段差が保存される (金型シム量の物理に整合)。
             # 旧倍率モードは solver / CLI には後方互換で残しているが UI には出さない。
@@ -1450,10 +1617,10 @@ with st.sidebar:
                 step=0.05,
                 help="充填全体に対し、圧縮位相 (型開き状態) で占める時間比率。",
             )
-        else:
-            comp_factor = 1.0
-            comp_stroke = None
-            comp_frac = 0.0
+    else:
+        comp_factor = 1.0
+        comp_stroke = None
+        comp_frac = 0.0
 
     with st.expander("保圧（通常成形）", expanded=False):
         hold_on = st.checkbox(
@@ -1462,7 +1629,7 @@ with st.sidebar:
             key="hold_on",
             help=(
                 "充填のあと、ゲートを保圧で保持して、圧力の時間変化と体積の縮みを解く"
-                "（圧縮性つき Hele-Shaw、2 領域 Tait の pvT）。圧縮成形 OFF のときだけ解く。"
+                "（圧縮性つき Hele-Shaw、2 領域 Tait の pvT）。通常成形のときだけ解く。"
                 "充填と同じ格子で解くので、解析時間が大きく延びる（数分〜数十分。形と VP 切替の値で変わる）。"
             ),
         )
@@ -1932,7 +2099,7 @@ if do_run:
     energy_on = multilayer_on and thermal_model == "energy" and not icm
     if multilayer_on and thermal_model == "energy" and icm:
         st.info(
-            "射出圧縮 ON なので、層の温度は到達時刻から読む方で解いた（刻みごとに解く方は通常成形だけ）。"
+            "射出圧縮成形なので、層の温度は到達時刻から読む方で解いた（刻みごとに解く方は通常成形だけ）。"
         )
     with st.spinner("Hele-Shaw方程式を解いている…"):
         if multilayer_on:
@@ -2626,7 +2793,7 @@ if "mfs_result" in st.session_state:
                 st.warning(
                     f"理論射出量 {_V_shot_cm3:.2f} cm³ が、この解析が掃く体積 "
                     f"{_V_swept_cm3:.2f} cm³ を下回っています"
-                    + ("（射出圧縮 ON なので開いた隙間の体積です）。" if icm else "。")
+                    + ("（射出圧縮成形なので開いた隙間の体積です）。" if icm else "。")
                     + "V/P 以降も最終段の射出率で射出し続けた前提の時間軸になって"
                     f"いるので、{_V_shot_cm3:.2f} cm³ を超えた分の充填時刻は外挿です。"
                     "計量律速のショートショットは「ショートショット（計量制限）」"
