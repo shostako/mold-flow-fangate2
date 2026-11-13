@@ -719,3 +719,30 @@ def test_a_gate_opening_on_a_cell_with_a_surplus_does_not_drop_the_melt():
     assert res.volume_held_m3 == pytest.approx(cap.sum(), rel=1e-9)
     # dropping the surplus made the machine deliver 0.86 % more than the cavity holds
     assert res.volume_injected_m3 == pytest.approx(cap.sum(), rel=1e-9)
+
+
+def test_a_part_of_the_cavity_fed_only_by_a_timed_gate_waits_for_it():
+    """Two separate strips, the second fed by a gate that opens at 5 s. The
+    first is full at 3 s; the screw stands still until the valve opens, then
+    fills the second at the programmed rate (Codex P2 on PR #28)."""
+    mask = np.zeros((5, 12), dtype=bool)
+    mask[1] = True
+    mask[3] = True
+    cap = np.where(mask, 1.0 * MM3, 0.0)
+    Q = 4.0 * MM3
+    res = march_fill(
+        mask,
+        cap,
+        [(1, 0)],
+        lambda t: Q * t,
+        _const(1e-12),
+        t_start_s=0.25,
+        dt_max_s=0.5,
+        delayed_gates=[DelayedGate(cells=((3, 0),), delay_s=5.0)],
+    )
+    assert res.complete
+    assert res.gate_events == [{"gate": 0, "t_s": pytest.approx(5.0), "melt_already_there": False}]
+    np.testing.assert_allclose(res.t_arr_s[1], (np.arange(12) + 1) / 4.0, rtol=1e-9)
+    np.testing.assert_allclose(res.t_arr_s[3], 5.0 + np.arange(12) / 4.0, rtol=1e-9)
+    assert res.volume_held_m3 == pytest.approx(24 * MM3, rel=1e-9)
+    assert res.volume_injected_m3 == pytest.approx(24 * MM3, rel=1e-9)

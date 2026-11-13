@@ -365,7 +365,15 @@ def march_fill(
         touch[fb[full[fa]]] = True
         front = m & ~full & (touch | (V > 0))
         fr = np.flatnonzero(front)
-        if fr.size == 0:  # nothing left the front can reach (cannot happen on a connected cavity)
+        if fr.size == 0:
+            # nothing left the front can reach: the open gates' part of the cavity
+            # is full. A valve still to open at a set time may feed the rest (a
+            # part of its own): the screw stands still until then.
+            if d_ahead:
+                wait = min(d_ahead) - t
+                t += wait
+                lag_s += wait
+                continue
             break
         S[fr] = conductance(fr, np.full(fr.size, t))
 
