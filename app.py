@@ -1284,7 +1284,8 @@ with st.sidebar:
         help="通常成形は型を閉じたまま充填する。保圧の計算と、層の温度を刻みごとに解く充填は通常成形だけで、"
         "「保圧」の欄も通常成形のときだけ出る。"
         "射出圧縮成形は、型を少し開いたまま充填して、あとから閉じる。圧縮されるのは内側の厚肉部（本体）だけで、"
-        "額縁・ゲート側の形・ランナは固定。条件は下の「射出圧縮成形 (ICM)」で決める。",
+        "額縁・ゲート側の形・ランナは固定。条件は下の「射出圧縮成形 (ICM)」で決める。"
+        "「ショートショット（計量制限）」の二相の解析は、射出圧縮成形のときだけ出る。",
     )
     icm = molding_method == "icm"
     fan_inputs = _fan_runner_sidebar()
@@ -1813,113 +1814,117 @@ with st.sidebar:
     with _short_shot_slot:
         geom, geom_settings = build_geometry(fan_inputs)
 
-        with st.expander("ショートショット（計量制限）", expanded=False):
-            # 二相モデル: (1) 射出相 = 型開きギャップで計量体積ぶん充填、
-            # (2) 圧縮相 = 型閉じで溶融プールを等圧ソースとして前進（体積保存）。
-            # 線形求解2回・時間積分なし。実機の計量値をそのまま入れて
-            # 段階ショートショットの現物形状と直接比較する用途。
-            two_phase_on = st.checkbox(
-                "二相ショートショット解析ON",
-                value=True,
-                key="two_phase_on",
-                help=(
-                    "計量を意図的に絞ったショートショットの最終形状を予測する。"
-                    "射出相（型開きギャップで計量体積まで充填）→ 圧縮相（型閉じで"
-                    "溶融プールを前進、体積保存）の二相。壁面冷却モデルは射出相に乗る:"
-                    "スキン層は開いた薄板が射出中に痩せてゲート部が先に埋まる順番を、"
-                    "層別は層ごとの温度・粘度で決まる順番を、どちらも計量 V/Q の時計で出す。"
-                    "圧縮相はどのモデルでも等温。"
-                ),
-            )
-            if two_phase_on:
-                # 既定値は現在の形状の最終キャビティ体積。形状を変えると追従するが、
-                # ユーザーが値を触った後は（前回の自動値から動いているので）触らない。
-                # 丸めない: solver は素の体積と比較するので、下に丸めた既定は
-                # 「完全充填ちょうど」でなく極小のショートショットになる（Codex P2）。
-                # 「触った」の判定は on_change（計量欄そのものへのユーザー操作）で
-                # 立つフラグに限る。「前回の自動値と今の値が一致するか」で判定すると、
-                # 形状ウィジェットの連打で前の rerun の新値がブラウザに届く前に次の
-                # rerun が始まったとき、ブラウザが持つ古い値が session_state に書き
-                # 戻されて「不一致＝触った」と誤判定し、以後の追従が黙って止まる
-                # （2026-09-11、翼 t0.65 の計量のまま t0.9 を解析して 0.4% ショート）。
-                # ただし Streamlit は script 本体より先に「前回の状態と違う widget 値」の
-                # on_change を発火するので、stale echo でもコールバックは呼ばれる。
-                # 届いた値が過去の自動値のどれかと一致するなら echo であって編集では
-                # ない（13 桁の浮動小数を手で打つことはない）— それだけを除外する。
-                _v_cav = float(geom.volume_cm3())
-                # 履歴の深さ 32 は「echo が届くより先に積もる形状変更の回数」の上限。
-                # 1 rerun は形状ビルドで 0.5〜1 s かかり、ブラウザの echo 遅れは
-                # 高々数 rerun なので 32 で桁余り。超えれば echo を編集と誤判定する
-                # が、その場合もリセットボタンで追従を再開できる。
-                _auto_hist: list[float] = st.session_state.setdefault(
-                    "mfs_shot_volume_auto_history", []
-                )
-                if _v_cav not in _auto_hist:
-                    _auto_hist.append(_v_cav)
-                    del _auto_hist[:-32]
-                # 二相を OFF にした rerun で widget が描かれないと Streamlit は
-                # `two_phase_shot_volume` を session_state から落とすが、非 widget の
-                # 編集フラグは残る。そのまま ON に戻すと「編集済みなので触らない」で
-                # 初期化を飛ばし、number_input が min の 0.01 cm³ で再登場して次の
-                # 実行がほぼ空の計量になる（Codex P2 on PR #87）。編集値は widget と
-                # 別のキーに写しておき、widget が消えていたらそこから復元する。
-                _edited = st.session_state.get("mfs_shot_volume_user_edited", False)
-                if "two_phase_shot_volume" not in st.session_state:
-                    _kept = st.session_state.get("mfs_shot_volume_user_value")
-                    if _edited and _kept is not None:
-                        st.session_state["two_phase_shot_volume"] = _kept
-                    else:
-                        st.session_state["mfs_shot_volume_user_edited"] = _edited = False
-                        st.session_state["two_phase_shot_volume"] = _v_cav
-                elif not _edited:
-                    st.session_state["two_phase_shot_volume"] = _v_cav
-                st.session_state["mfs_shot_volume_auto"] = _v_cav
-
-                def _mark_shot_volume_edited() -> None:
-                    _v = st.session_state["two_phase_shot_volume"]
-                    if _v not in st.session_state.get("mfs_shot_volume_auto_history", []):
-                        st.session_state["mfs_shot_volume_user_edited"] = True
-                        st.session_state["mfs_shot_volume_user_value"] = _v
-
-                def _reset_shot_volume() -> None:
-                    st.session_state["mfs_shot_volume_user_edited"] = False
-                    st.session_state.pop("mfs_shot_volume_user_value", None)
-                    st.session_state["two_phase_shot_volume"] = st.session_state[
-                        "mfs_shot_volume_auto"
-                    ]
-
-                shot_volume_cm3 = st.number_input(
-                    "計量体積 V_shot [cm³]",
-                    min_value=0.01,
-                    step=0.1,
-                    key="two_phase_shot_volume",
-                    on_change=_mark_shot_volume_edited,
+        # 二相ショートショットは、射出圧縮成形（開いた型に射出して、あとから閉じる）を
+        # 2 つの相で表すためのもの。通常成形には圧縮相が無いので、欄ごと出さない。
+        two_phase_on = False
+        shot_volume_cm3 = None
+        st.session_state["mfs_shot_volume_auto"] = float(geom.volume_cm3())
+        if icm:
+            with st.expander("ショートショット（計量制限）", expanded=False):
+                # 二相モデル: (1) 射出相 = 型開きギャップで計量体積ぶん充填、
+                # (2) 圧縮相 = 型閉じで溶融プールを等圧ソースとして前進（体積保存）。
+                # 線形求解2回・時間積分なし。実機の計量値をそのまま入れて
+                # 段階ショートショットの現物形状と直接比較する用途。
+                two_phase_on = st.checkbox(
+                    "二相ショートショット解析ON",
+                    value=True,
+                    key="two_phase_on",
                     help=(
-                        "実機の計量値（ショット体積）。既定は現在の形状の最終キャビティ"
-                        "体積（完全充填ちょうど）で、欄を編集するまで形状変更に追従する。"
-                        "減らすとショートショットになる。"
+                        "計量を意図的に絞ったショートショットの最終形状を予測する。"
+                        "射出相（型開きギャップで計量体積まで充填）→ 圧縮相（型閉じで"
+                        "溶融プールを前進、体積保存）の二相。壁面冷却モデルは射出相に乗る:"
+                        "スキン層は開いた薄板が射出中に痩せてゲート部が先に埋まる順番を、"
+                        "層別は層ごとの温度・粘度で決まる順番を、どちらも計量 V/Q の時計で出す。"
+                        "圧縮相はどのモデルでも等温。"
                     ),
                 )
-                _hint = f"最終キャビティ体積 {_v_cav:.2f} cm³"
-                if icm and comp_stroke is not None:
-                    _v_open = _v_cav + comp_stroke * geom.compression_area_mm2() / 1000.0
-                    _hint += f" / 開きギャップ体積 ≈ {_v_open:.2f} cm³"
-                _short = _v_cav - float(shot_volume_cm3)
-                if _short > 1e-9:
-                    _hint += (
-                        f"。**計量がキャビティ体積を {_short:.2f} cm³ 下回る → ショートショット**"
+                if two_phase_on:
+                    # 既定値は現在の形状の最終キャビティ体積。形状を変えると追従するが、
+                    # ユーザーが値を触った後は（前回の自動値から動いているので）触らない。
+                    # 丸めない: solver は素の体積と比較するので、下に丸めた既定は
+                    # 「完全充填ちょうど」でなく極小のショートショットになる（Codex P2）。
+                    # 「触った」の判定は on_change（計量欄そのものへのユーザー操作）で
+                    # 立つフラグに限る。「前回の自動値と今の値が一致するか」で判定すると、
+                    # 形状ウィジェットの連打で前の rerun の新値がブラウザに届く前に次の
+                    # rerun が始まったとき、ブラウザが持つ古い値が session_state に書き
+                    # 戻されて「不一致＝触った」と誤判定し、以後の追従が黙って止まる
+                    # （2026-09-11、翼 t0.65 の計量のまま t0.9 を解析して 0.4% ショート）。
+                    # ただし Streamlit は script 本体より先に「前回の状態と違う widget 値」の
+                    # on_change を発火するので、stale echo でもコールバックは呼ばれる。
+                    # 届いた値が過去の自動値のどれかと一致するなら echo であって編集では
+                    # ない（13 桁の浮動小数を手で打つことはない）— それだけを除外する。
+                    _v_cav = float(geom.volume_cm3())
+                    # 履歴の深さ 32 は「echo が届くより先に積もる形状変更の回数」の上限。
+                    # 1 rerun は形状ビルドで 0.5〜1 s かかり、ブラウザの echo 遅れは
+                    # 高々数 rerun なので 32 で桁余り。超えれば echo を編集と誤判定する
+                    # が、その場合もリセットボタンで追従を再開できる。
+                    _auto_hist: list[float] = st.session_state.setdefault(
+                        "mfs_shot_volume_auto_history", []
                     )
+                    if _v_cav not in _auto_hist:
+                        _auto_hist.append(_v_cav)
+                        del _auto_hist[:-32]
+                    # 二相を OFF にした rerun で widget が描かれないと Streamlit は
+                    # `two_phase_shot_volume` を session_state から落とすが、非 widget の
+                    # 編集フラグは残る。そのまま ON に戻すと「編集済みなので触らない」で
+                    # 初期化を飛ばし、number_input が min の 0.01 cm³ で再登場して次の
+                    # 実行がほぼ空の計量になる（Codex P2 on PR #87）。編集値は widget と
+                    # 別のキーに写しておき、widget が消えていたらそこから復元する。
+                    _edited = st.session_state.get("mfs_shot_volume_user_edited", False)
+                    if "two_phase_shot_volume" not in st.session_state:
+                        _kept = st.session_state.get("mfs_shot_volume_user_value")
+                        if _edited and _kept is not None:
+                            st.session_state["two_phase_shot_volume"] = _kept
+                        else:
+                            st.session_state["mfs_shot_volume_user_edited"] = _edited = False
+                            st.session_state["two_phase_shot_volume"] = _v_cav
+                    elif not _edited:
+                        st.session_state["two_phase_shot_volume"] = _v_cav
+                    st.session_state["mfs_shot_volume_auto"] = _v_cav
+
+                    def _mark_shot_volume_edited() -> None:
+                        _v = st.session_state["two_phase_shot_volume"]
+                        if _v not in st.session_state.get("mfs_shot_volume_auto_history", []):
+                            st.session_state["mfs_shot_volume_user_edited"] = True
+                            st.session_state["mfs_shot_volume_user_value"] = _v
+
+                    def _reset_shot_volume() -> None:
+                        st.session_state["mfs_shot_volume_user_edited"] = False
+                        st.session_state.pop("mfs_shot_volume_user_value", None)
+                        st.session_state["two_phase_shot_volume"] = st.session_state[
+                            "mfs_shot_volume_auto"
+                        ]
+
+                    shot_volume_cm3 = st.number_input(
+                        "計量体積 V_shot [cm³]",
+                        min_value=0.01,
+                        step=0.1,
+                        key="two_phase_shot_volume",
+                        on_change=_mark_shot_volume_edited,
+                        help=(
+                            "実機の計量値（ショット体積）。既定は現在の形状の最終キャビティ"
+                            "体積（完全充填ちょうど）で、欄を編集するまで形状変更に追従する。"
+                            "減らすとショートショットになる。"
+                        ),
+                    )
+                    _hint = f"最終キャビティ体積 {_v_cav:.2f} cm³"
+                    if icm and comp_stroke is not None:
+                        _v_open = _v_cav + comp_stroke * geom.compression_area_mm2() / 1000.0
+                        _hint += f" / 開きギャップ体積 ≈ {_v_open:.2f} cm³"
+                    _short = _v_cav - float(shot_volume_cm3)
+                    if _short > 1e-9:
+                        _hint += f"。**計量がキャビティ体積を {_short:.2f} cm³ 下回る → ショートショット**"
+                    else:
+                        _hint += "。計量が最終キャビティ体積以上だと完全充填になる"
+                    st.caption(_hint)
+                    if st.session_state.get("mfs_shot_volume_user_edited", False):
+                        st.button(
+                            "計量をキャビティ体積に戻す（形状追従を再開）",
+                            key="two_phase_shot_volume_reset",
+                            on_click=_reset_shot_volume,
+                        )
                 else:
-                    _hint += "。計量が最終キャビティ体積以上だと完全充填になる"
-                st.caption(_hint)
-                if st.session_state.get("mfs_shot_volume_user_edited", False):
-                    st.button(
-                        "計量をキャビティ体積に戻す（形状追従を再開）",
-                        key="two_phase_shot_volume_reset",
-                        on_click=_reset_shot_volume,
-                    )
-            else:
-                shot_volume_cm3 = None
+                    shot_volume_cm3 = None
 
 
 # ----------------------- main panel -----------------------
@@ -2247,13 +2252,7 @@ if do_run:
         # 乗る。層別は固定点を計量 V/Q の時計（膨張なし）で解き直す。
         two_phase_result = None
         two_phase_skip_reason: str | None = None
-        if two_phase_on and geom.delayed_gates:
-            # 射出相の時刻を体積の順から作り直すので、遅れて開くバルブを扱えない
-            two_phase_skip_reason = (
-                "直接ゲートを遅らせて開く設定では解きません（ゲートを同時に開く設定で解けます）。"
-            )
-            st.info(f"二相ショートショット解析: {two_phase_skip_reason}")
-        elif two_phase_on:
+        if two_phase_on:
             try:
                 two_phase_result = solve_two_phase_short_shot(solver, shot_volume_cm3)
             except ValueError as e:
@@ -2885,8 +2884,11 @@ if "mfs_result" in st.session_state:
                     + ("（射出圧縮成形なので開いた隙間の体積です）。" if icm else "。")
                     + "V/P 以降も最終段の射出率で射出し続けた前提の時間軸になって"
                     f"いるので、{_V_shot_cm3:.2f} cm³ を超えた分の充填時刻は外挿です。"
-                    "計量律速のショートショットは「ショートショット（計量制限）」"
-                    "で見てください。"
+                    + (
+                        "計量律速のショートショットは「ショートショット（計量制限）」で見てください。"
+                        if icm
+                        else ""
+                    )
                 )
 
         def _download(label: str, path: Path, mime: str, key: str) -> None:

@@ -25,6 +25,7 @@ def test_the_default_run_marches_and_the_settings_record_says_so():
     two-phase injection phase say so in their metadata, and settings.json
     records the choice next to the other wall-cooling inputs."""
     at = _app()
+    at.radio(key="molding_method").set_value("icm").run()  # the two-phase short shot is ICM's
     at.button[0].click().run()
     assert not at.exception
     result = at.session_state["mfs_result"]
@@ -40,6 +41,7 @@ def test_the_tau_fill_reaches_the_solver_and_the_settings_record():
     """Choosing "一発で解く" runs the τ fixed point, in the main solve and in the
     two-phase injection phase."""
     at = _app()
+    at.radio(key="molding_method").set_value("icm").run()  # the two-phase short shot is ICM's
     at.radio(key="fill_method").set_value("tau").run()
     at.button[0].click().run()
     assert not at.exception

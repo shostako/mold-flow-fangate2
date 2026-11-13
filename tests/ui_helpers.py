@@ -27,3 +27,18 @@ def texts(at: AppTest) -> str:
     for group in (at.caption, at.info, at.warning, at.error, at.markdown, at.exception):
         parts.extend(str(getattr(el, "value", "")) for el in group)
     return "\n".join(parts)
+
+
+def two_phase(at: AppTest, on: bool) -> AppTest:
+    """Switch the two-phase short shot on or off; returns ``at`` (for ``.run()``).
+
+    The short shot stands for injection-compression molding (injection into the
+    open gap, then the closing), so the sidebar offers it with that method only.
+    Under conventional molding it is not run and there is nothing to switch off;
+    asking for it there is a mistake in the test."""
+    boxes = [c for c in at.checkbox if c.key == "two_phase_on"]
+    if boxes:
+        boxes[0].set_value(on)
+    elif on:
+        raise AssertionError("the two-phase short shot is offered with injection-compression only")
+    return at

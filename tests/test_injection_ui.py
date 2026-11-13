@@ -32,6 +32,8 @@ from pathlib import Path
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from tests.ui_helpers import two_phase as _two_phase
+
 APP = Path(__file__).resolve().parent.parent / "app.py"
 
 # --- the app's own injection defaults (keep in sync with app.py) -----------
@@ -115,7 +117,7 @@ def _staged(n: int = MACHINE_STAGES, timeout: float = 240.0) -> AppTest:
 def _quick(at: AppTest) -> None:
     """Isothermal, no two-phase: the fastest run that still reads the rate."""
     at.radio(key="wall_model").set_value("none")
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
 
 
 STAGED_ONLY = {"inj_meter_pos", "inj_vp_pos", "inj_switch_0", "inj_velocity_0"}
@@ -437,8 +439,8 @@ def test_the_two_phase_panel_warns_when_the_shot_runs_past_vp():
     at = _staged(2)
     at.number_input(key="inj_screw_d").set_value(SMALL_SCREW_D)
     at.radio(key="wall_model").set_value("none")
-    at.checkbox(key="two_phase_on").set_value(True)
     at.radio(key="molding_method").set_value("icm").run()
+    assert at.checkbox(key="two_phase_on").value is True
     # past the small screw's stroke (sim: 3.77 cm3, fangate2: 41.5 cm3)
     at.number_input(key="two_phase_shot_volume").set_value(round(1.2 * SMALL_STROKE_CM3, 2))
     at.button[0].click().run()
@@ -452,8 +454,8 @@ def test_the_two_phase_panel_warns_when_the_shot_runs_past_vp():
 def test_the_two_phase_panel_is_quiet_when_the_shot_fits_the_stroke():
     at = _staged(2)
     at.radio(key="wall_model").set_value("none")
-    at.checkbox(key="two_phase_on").set_value(True)
     at.radio(key="molding_method").set_value("icm").run()
+    assert at.checkbox(key="two_phase_on").value is True
     at.number_input(key="two_phase_shot_volume").set_value(4.5)
     at.button[0].click().run()
     assert not at.exception

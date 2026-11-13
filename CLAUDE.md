@@ -4,7 +4,7 @@
 [mold-flow-fangate](../mold-flow-fangate) v0.7.3 を起点に、**この図面専用の別リポ**として立ち上げた（fangate 側は触らない）。
 顧客名は書かない（public リポ）。図面 PDF はリポに入れない。
 
-## 現状（2026-09-14、v0.19.0 まで追記）
+## 現状（2026-09-14、v0.19.1 まで追記）
 - 形状仕様は `docs/spec.md`（図面のベクタから実寸で読んだ寸法と、読み取りの根拠）
 - fangate の形状非依存モジュールは `core/` に移植済み（v0.1.0）。`geometry.py` は `Geometry` dataclass と `build_demo_geometry` のみ
 - builder は `core/fan_runner.py`（`FanRunnerPlateConfig` / `build_fan_runner_plate_geometry`、v0.2.0）。既定値が図面。
@@ -69,10 +69,12 @@
   `"delay"`（射出の開始から `direct_delay_s` 秒）/ `"arrival"`（樹脂が届いてから `direct_delay_s` 秒）。2 つ目からのゲート（`direct_points_mm` の順）が
   `Geometry.delayed_gates`（`core.transient_fill.DelayedGate`）に入る。`Geometry.gates` には全部のゲートが入ったままで、止めておくのは
   `march_fill(delayed_gates=…)` だけ（開く前はふつうのセル、開いたら同じゲート圧を共有、開く時刻で刻みを切る、時刻の決まったゲートが残っている間は
-  「止まった」にしない）。τ の解き方と射出圧縮成形では誤りにする（UI は射出圧縮成形のとき欄を出さない）。保圧は全部のゲートを開いて解く。二相ショートショットは解かない（理由を出して飛ばす）。
+  「止まった」にしない）。τ の解き方と射出圧縮成形では誤りにする（UI は射出圧縮成形のとき欄を出さない）。保圧は全部のゲートを開いて解く。二相ショートショットは解かない（`solve_two_phase_short_shot` が `ValueError`。画面からは届かない）。
   記録は metadata の `delayed_gates` と `gate_events`、画面は `app._gate_open_note`
 - **成形方法（v0.18.0、既定は v0.19.0 から通常成形）**: サイドバーの先頭の `molding_method`（`"conventional"` 通常成形＝既定／`"icm"` 射出圧縮成形）。
-  旧 `icm_on` のチェックは無い。「保圧」の欄は通常成形のときだけ出す（射出圧縮成形では `hold_on = False`、ユーザーの決定 2026-11-14）
+  旧 `icm_on` のチェックは無い。「保圧」の欄は通常成形のときだけ出す（射出圧縮成形では `hold_on = False`、ユーザーの決定 2026-11-14）。
+  「ショートショット（計量制限）」＝二相ショートショットは射出圧縮成形のときだけ出す（v0.19.1。二相は射出圧縮成形を表すための解析で、
+  通常成形には関係しない。ユーザーの決定 2026-11-14）。UI テストで二相を切るときは `tests/ui_helpers.two_phase(at, False)`
 - 環境: `uv venv --python 3.12 .venv && uv pip install -e ".[dev]"`。テストは `MPLBACKEND=Agg .venv/bin/pytest -n auto --dist loadscope`（CI と同じ。直列だと 8 分、4 並列で 5 分半）
 - Streamlit Community Cloud: <https://mold-flow-fangate2.streamlit.app>（main を自動デプロイ）。`requirements.txt` は pyproject の deps のミラー、
   `runtime.txt` は `python-3.12`。deps を変えたら requirements.txt も同期

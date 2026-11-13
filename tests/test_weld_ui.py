@@ -15,12 +15,13 @@ import zipfile
 from pathlib import Path
 
 from tests.ui_helpers import app as _app
+from tests.ui_helpers import two_phase as _two_phase
 
 
 def test_moving_the_slider_after_a_run_rethresholds_without_resolving():
     at = _app()
     at.radio(key="wall_model").set_value("none")
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     assert at.slider(key="weld_min_angle").value == 0
     at.button[0].click().run()
     assert not at.exception

@@ -7,6 +7,7 @@ import dataclasses
 from core import GATE3_DEFAULTS, FanRunnerPlateConfig
 from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts as _texts
+from tests.ui_helpers import two_phase as _two_phase
 
 
 def _keys(at) -> set[str]:
@@ -36,7 +37,7 @@ def test_gate3_shows_the_arms_on_top_of_gate1_and_records_them():
     text = _texts(at)
     assert "36.3 mm 未満" in text
     assert "形状パラメータが不正" not in text
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     at.button[0].click().run()
     assert not at.exception
     rec = at.session_state["mfs_settings"]["geometry"]["config"]
