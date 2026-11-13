@@ -3,6 +3,7 @@
 from .fan_runner import (
     DIRECT_DEFAULTS,
     DIRECT_LAYOUTS,
+    DIRECT_OPEN_MODES,
     FAN_SHAPES,
     GATE2_DEFAULTS,
     GATE3_DEFAULTS,
@@ -54,6 +55,7 @@ __all__ = [
     "RUNNER_SHAPES",
     "FAN_SHAPES",
     "DIRECT_LAYOUTS",
+    "DIRECT_OPEN_MODES",
     "TAB_DEFAULTS",
     "TAB_SHAPES",
     "OVERLAP_TAB_DEFAULTS",

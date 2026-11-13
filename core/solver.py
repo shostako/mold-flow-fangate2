@@ -595,6 +595,7 @@ class HeleShawSolver:
             product_mask=(None if geom.product_mask is None else geom.product_mask & live),
             valve_axis_x_mm=geom.valve_axis_x_mm,
             valve_marker_mm=geom.valve_marker_mm,
+            delayed_gates=list(geom.delayed_gates),
         )
         if self.injection_profile is not None:
             # A profile is absolute: the same machine runs the same stages
@@ -1091,6 +1092,9 @@ class HeleShawSolver:
         if not self.geometry.gates:
             raise ValueError("Geometry has no gates")
         check_gate_reachability(self.geometry)
+        if self.geometry.delayed_gates:
+            # the τ solve holds every gate open from the start
+            raise ValueError("gates that open later need the time-marched fill (multilayer)")
 
         eta = self._effective_viscosity()
         cavity_mask = self.geometry.mask

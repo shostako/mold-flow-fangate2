@@ -12,8 +12,9 @@ from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts as _texts
 
 
-def test_the_defaults_are_two_phase_on_with_icm_and_the_layered_wall_model():
-    """UI defaults (v0.8.0): PMMA, two-phase ON, ICM ON at 0.50 mm stroke, wall
+def test_the_defaults_are_two_phase_on_and_the_layered_wall_model():
+    """UI defaults (v0.8.0; conventional molding since v0.19.0, ICM at 0.50 mm
+    stroke when chosen): PMMA, two-phase ON, wall
     model 'multilayer' (N=7) -- the layered model rides on the two-phase
     injection phase since v0.8.0 (sim v0.48.0), and it is the only one that
     lets the melt and mold temperatures touch the fill order. v0.1.0-v0.7.0
@@ -21,10 +22,11 @@ def test_the_defaults_are_two_phase_on_with_icm_and_the_layered_wall_model():
     at = _app()
     assert at.selectbox[0].value == "PMMA"
     assert at.checkbox(key="two_phase_on").value is True
-    assert at.radio(key="molding_method").value == "icm"
+    assert at.radio(key="molding_method").value == "conventional"
     assert at.radio(key="wall_model").value == "multilayer"
     layers = [s for s in at.slider if str(s.label) == "層数 N"]
     assert len(layers) == 1 and layers[0].value == 7
+    at.radio(key="molding_method").set_value("icm").run()
     stroke = [s for s in at.slider if str(s.label).startswith("圧縮ストローク")]
     assert len(stroke) == 1 and stroke[0].value == 0.50
 

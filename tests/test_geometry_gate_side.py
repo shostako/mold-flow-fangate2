@@ -239,3 +239,44 @@ def test_the_overlap_tab_ignores_the_centre_tabs_ramp_fields():
     a = _build(**OVERLAP_TAB_DEFAULTS)
     b = _build(**OVERLAP_TAB_DEFAULTS, tab_end_thk_mm=0.3, tab_ramp_len_mm=5.0)
     assert np.array_equal(a.thickness_mm, b.thickness_mm)
+
+
+# ---------------------------------------------------------- gates that open later
+def test_direct_gates_open_together_by_default():
+    for layout in ("center", "corners4", "diagonal2"):
+        assert _build(runner_shape="direct", direct_layout=layout).delayed_gates == []
+    # one gate has none to hold back, whatever the mode
+    g = _build(runner_shape="direct", direct_open_mode="delay", direct_delay_s=2.0)
+    assert g.delayed_gates == []
+
+
+@pytest.mark.parametrize(("layout", "n_late"), [("diagonal2", 1), ("corners4", 3)])
+@pytest.mark.parametrize("mode", ["delay", "arrival"])
+def test_the_direct_gates_after_the_first_are_held_back(layout, n_late, mode):
+    g = _build(
+        runner_shape="direct", direct_layout=layout, direct_open_mode=mode, direct_delay_s=1.5
+    )
+    same = _build(runner_shape="direct", direct_layout=layout)
+    assert g.gates == same.gates  # every gate cell is still a gate cell
+    assert len(g.delayed_gates) == n_late
+    late = [c for dg in g.delayed_gates for c in dg.cells]
+    assert len(late) == len(set(late)) and set(late) < set(g.gates)
+    for dg in g.delayed_gates:
+        assert dg.delay_s == 1.5 and dg.on_arrival == (mode == "arrival")
+    # the gate open from the start is the first point: gate side, left
+    first = [c for c in g.gates if c not in set(late)]
+    fy, fx = np.array(first).T
+    assert np.all(X[fy, fx] < 0) and np.all(Y[fy, fx] < H / 2)
+
+
+@pytest.mark.parametrize(
+    ("kw", "match"),
+    [
+        ({"direct_open_mode": "later"}, "direct_open_mode"),
+        ({"direct_open_mode": "delay", "direct_delay_s": -0.1}, "direct_delay_s"),
+        ({"direct_open_mode": "delay", "direct_delay_s": float("nan")}, "direct_delay_s"),
+    ],
+)
+def test_the_opening_of_the_direct_gates_is_validated(kw, match):
+    with pytest.raises(ValueError, match=match):
+        _build(runner_shape="direct", direct_layout="diagonal2", **kw)
