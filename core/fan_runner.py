@@ -738,11 +738,17 @@ def build_fan_runner_plate_geometry(cfg: FanRunnerPlateConfig) -> Geometry:
     if shape == "direct":
         # --- injection points: a gate disc at each point on the body ---
         pts = cfg.direct_points_mm
+        # on the body only: a gate cell on the thin rim would feed the rim
+        # past the step that the melt has to cross to reach it
+        body = in_inner & mask
+        if not body.any():
+            raise ValueError(
+                f"cell_size_mm ({dx}) rasterises the body away (it is "
+                f"{cfg.plate_w_mm - 2 * cfg.frame_w_mm:g} × {cfg.plate_h_mm - 2 * cfg.frame_w_mm:g}"
+                f" mm); a direct gate needs a body cell to sit on. Refine the mesh"
+            )
         for px, py in pts:
             r2 = (xx - cx - px) ** 2 + (yy - y_edge - py) ** 2
-            # on the body only: a gate cell on the thin rim would feed the rim
-            # past the step that the melt has to cross to reach it
-            body = in_inner & mask
             sel = (r2 <= (cfg.gate_d_mm / 2.0) ** 2) & body
             if not sel.any():
                 sel[np.unravel_index(int(np.argmin(np.where(body, r2, np.inf))), r2.shape)] = True

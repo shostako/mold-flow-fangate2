@@ -4,6 +4,8 @@ side"). The product proper (body + rim on three sides) is the same for all."""
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -163,6 +165,19 @@ def test_a_corner_gate_as_wide_as_its_inset_allows_stays_on_the_body():
     gy, gx = np.array(g.gates).T
     assert np.all(g.compression_mask[gy, gx])
     assert np.all(g.thickness_mm[gy, gx] == 4.0)
+
+
+def test_a_body_thinner_than_the_mesh_is_a_mesh_error_not_a_gate_outside_the_cavity():
+    # 1 mm of body between the rims: no 4 mm cell centre lands on it (Codex P2 on PR #27)
+    cfg = FanRunnerPlateConfig(
+        runner_shape="direct", plate_h_mm=41.0, frame_w_mm=20.0, gate_d_mm=0.5, cell_size_mm=4.0
+    )
+    with pytest.raises(ValueError, match="rasterises the body away"):
+        build_fan_runner_plate_geometry(cfg)
+    # the same plate on a mesh that resolves the body is fine
+    g = build_fan_runner_plate_geometry(dataclasses.replace(cfg, cell_size_mm=0.5))
+    gy, gx = np.array(g.gates).T
+    assert np.all(g.mask[gy, gx] & g.compression_mask[gy, gx])
 
 
 def test_a_mesh_coarser_than_the_orifice_still_gives_every_direct_gate_a_cell():
