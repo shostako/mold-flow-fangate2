@@ -746,3 +746,38 @@ def test_a_part_of_the_cavity_fed_only_by_a_timed_gate_waits_for_it():
     np.testing.assert_allclose(res.t_arr_s[3], 5.0 + np.arange(12) / 4.0, rtol=1e-9)
     assert res.volume_held_m3 == pytest.approx(24 * MM3, rel=1e-9)
     assert res.volume_injected_m3 == pytest.approx(24 * MM3, rel=1e-9)
+
+
+def test_the_wait_for_a_timed_gate_is_handed_to_on_step():
+    """A caller that carries the temperature has to go on cooling the melt while
+    the screw waits: the steps it sees cover the time without a gap, and the
+    waiting ones move nothing (Codex P2 on PR #28)."""
+    mask = np.zeros((5, 12), dtype=bool)
+    mask[1] = True
+    mask[3] = True
+    cap = np.where(mask, 1.0 * MM3, 0.0)
+    Q = 4.0 * MM3
+    seen = []
+
+    def on_step(st):
+        seen.append((st.t_s, st.dt_s, float(np.abs(st.moved_m3).sum()), float(st.gate_in_m3.sum())))
+
+    res = march_fill(
+        mask,
+        cap,
+        [(1, 0)],
+        lambda t: Q * t,
+        _const(1e-12),
+        t_start_s=0.25,
+        dt_max_s=0.5,
+        on_step=on_step,
+        delayed_gates=[DelayedGate(cells=((3, 0),), delay_s=5.0)],
+    )
+    assert res.complete
+    t0 = np.array([s[0] for s in seen])
+    dt = np.array([s[1] for s in seen])
+    np.testing.assert_allclose(t0[1:], (t0 + dt)[:-1], rtol=1e-9)  # no gap
+    assert t0[0] == pytest.approx(0.25) and (t0 + dt)[-1] == pytest.approx(res.t_end_s)
+    idle = [s for s in seen if 3.0 - 1e-9 <= s[0] < 5.0 - 1e-9]
+    assert sum(s[1] for s in idle) == pytest.approx(2.0)
+    assert all(s[1] <= 0.5 + 1e-12 and s[2] == 0.0 and s[3] == 0.0 for s in idle)

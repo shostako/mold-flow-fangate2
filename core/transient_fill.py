@@ -370,9 +370,33 @@ def march_fill(
             # is full. A valve still to open at a set time may feed the rest (a
             # part of its own): the screw stands still until then.
             if d_ahead:
-                wait = min(d_ahead) - t
-                t += wait
-                lag_s += wait
+                t_open = min(d_ahead)
+                lag_s += t_open - t
+                if on_step is not None:
+                    # nothing moves, but the melt goes on cooling: hand the wait
+                    # to the caller in steps of dt_max at most
+                    none = np.zeros(0, dtype=np.int64)
+                    while t_open - t > t_tol:
+                        h = min(t_open - t, float(dt_max_s))
+                        S_now = on_step(
+                            MarchStep(
+                                t_s=t,
+                                dt_s=h,
+                                face_a=fa,
+                                face_b=fb,
+                                moved_m3=np.zeros(fa.size),
+                                held_m3=V.copy(),
+                                full=full,
+                                newly=none,
+                                gate_in_m3=np.zeros(n),
+                                pressure_Pa=np.zeros(n),
+                                volume_injected_m3=v_prev_inj + v_extra,
+                            )
+                        )
+                        if S_now is not None:
+                            S[full] = np.asarray(S_now, dtype=float)[full]
+                        t += h
+                t = t_open
                 continue
             break
         S[fr] = conductance(fr, np.full(fr.size, t))
