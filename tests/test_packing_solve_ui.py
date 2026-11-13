@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts
+from tests.ui_helpers import two_phase as _two_phase
 
 OFF_NOTE = "「保圧を解く」を ON にして解析すると出ます"
 ICM_NOTE = "射出圧縮成形の解析では解きません"
@@ -26,8 +27,8 @@ def _run(
     vp: float | None = None,
 ):
     at.radio(key="wall_model").set_value("none")
-    at.checkbox(key="two_phase_on").set_value(False)
     at.radio(key="molding_method").set_value("icm" if icm else "conventional").run()
+    _two_phase(at, False)
     if icm:  # the holding inputs are not shown with injection-compression
         hold = False
     else:

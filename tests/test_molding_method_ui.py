@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts as _texts
+from tests.ui_helpers import two_phase as _two_phase
 
 
 def _sliders(at) -> set[str]:
@@ -29,6 +30,15 @@ def test_conventional_molding_is_the_default_with_the_holding_inputs_and_no_comp
     assert first.key == "molding_method"
     assert not {"圧縮ストローク [mm]", "圧縮位相の充填占有率"} & _sliders(at)
     assert _hold_keys(at) == HOLD_KEYS
+    # the two-phase short shot stands for injection-compression: not offered here
+    assert "two_phase_on" not in {c.key for c in at.checkbox}
+    assert "ショートショット（計量制限）" not in {str(e.label) for e in at.sidebar.expander}
+    at.button[0].click().run()
+    assert not at.exception
+    assert at.session_state["mfs_two_phase_result"] is None
+    assert at.session_state["mfs_two_phase_skip"] is None
+    assert at.session_state["mfs_settings"]["two_phase_short_shot"]["enabled"] is False
+    assert "二相ショートショット" not in _texts(at)
 
 
 def test_injection_compression_shows_its_conditions_and_hides_the_holding_inputs():
@@ -37,7 +47,9 @@ def test_injection_compression_shows_its_conditions_and_hides_the_holding_inputs
     assert not at.exception
     assert {"圧縮ストローク [mm]", "圧縮位相の充填占有率"} <= _sliders(at)
     assert _hold_keys(at) == set()
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    assert at.checkbox(key="two_phase_on").value is True  # offered, and on
+    assert "ショートショット（計量制限）" in {str(e.label) for e in at.sidebar.expander}
+    _two_phase(at, False).run()
     at.button[0].click().run()
     assert not at.exception
     rec = at.session_state["mfs_settings"]
@@ -49,7 +61,7 @@ def test_conventional_molding_hides_the_compression_conditions_and_solves_withou
     at.radio(key="molding_method").set_value("conventional").run()
     assert not at.exception
     assert not {"圧縮ストローク [mm]", "圧縮位相の充填占有率"} & _sliders(at)
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     at.button[0].click().run()
     assert not at.exception
     rec = at.session_state["mfs_settings"]
@@ -65,7 +77,7 @@ def test_holding_switched_on_does_not_carry_into_injection_compression():
     """ON under conventional molding, then ICM: the inputs go, the run solves no
     holding and says why, and the record carries none."""
     at = _app()
-    at.checkbox(key="two_phase_on").set_value(False)
+    _two_phase(at, False)
     at.checkbox(key="hold_on").set_value(True).run()
     at.radio(key="molding_method").set_value("icm").run()
     assert _hold_keys(at) == set()

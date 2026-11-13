@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts
+from tests.ui_helpers import two_phase as _two_phase
 
 SERIES_NOTE = "製品の輪郭の圧力が実際より低く（0 に）出る"
 THIN_NOTE = "薄い所（1 mm の額縁など）が保圧で埋まるかの判定は当てにならない"
@@ -16,7 +17,7 @@ THIN_NOTE = "薄い所（1 mm の額縁など）が保圧で埋まるかの判�
 
 def _run(at, *, wall: str, energy: bool = False, clamp_kN: float | None = None):
     at.radio(key="wall_model").set_value(wall)
-    at.checkbox(key="two_phase_on").set_value(False)
+    _two_phase(at, False)
     at.radio(key="molding_method").set_value("conventional")
     at.checkbox(key="hold_on").set_value(True).run()
     at.number_input(key="hold_p_mpa").set_value(90.0)
@@ -104,7 +105,7 @@ def test_the_temperature_choice_needs_the_marching_fill():
 def test_the_wall_at_the_mold_temperature_and_a_flash_threshold():
     at = _app()
     at.radio(key="wall_model").set_value("multilayer")
-    at.checkbox(key="two_phase_on").set_value(False)
+    _two_phase(at, False)
     at.radio(key="molding_method").set_value("conventional")
     at.checkbox(key="hold_on").set_value(True).run()
     assert at.number_input(key="flash_threshold_mpa").value is None
@@ -133,7 +134,7 @@ def test_a_fill_that_stalls_before_the_switch_hands_over_where_it_stopped():
     # (the fill's stall is checked first: if this mesh ever fills it all, the test says so)
     at = _app()
     at.radio(key="wall_model").set_value("multilayer")
-    at.checkbox(key="two_phase_on").set_value(False)
+    _two_phase(at, False)
     at.radio(key="molding_method").set_value("conventional")
     at.checkbox(key="hold_on").set_value(True).run()
     at.radio(key="fill_method").set_value("march").run()

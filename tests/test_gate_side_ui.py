@@ -17,6 +17,7 @@ from core import (
 )
 from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts as _texts
+from tests.ui_helpers import two_phase as _two_phase
 
 FAN_ONLY = {"fg_runner_w_mm", "fg_fan_flank_deg", "fg_runner_edge_thk_mm", "fg_balancer_on"}
 SHOWN = {
@@ -66,7 +67,7 @@ def test_each_gate_side_shape_shows_its_own_inputs_runs_and_is_recorded(shape):
     # runner length and round end belong to the shapes that have a runner
     assert ("fg_runner_len_mm" in keys) == (shape != "direct")
     assert "形状パラメータが不正" not in _texts(at)
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     at.button[0].click().run()
     assert not at.exception
     rec = at.session_state["mfs_settings"]["geometry"]["config"]
@@ -127,7 +128,7 @@ def test_direct_gates_offer_three_layouts_and_the_inset_only_for_the_corners():
         assert not at.exception
         assert at.number_input(key="fg_direct_inset_mm").value == 15.0
         assert at.number_input(key="fg_direct_inset_mm").min == 1.5  # the gate's radius
-        at.checkbox(key="two_phase_on").set_value(False).run()
+        _two_phase(at, False).run()
         at.button[0].click().run()
         assert not at.exception
         geom = at.session_state["mfs_geom"]
@@ -163,7 +164,7 @@ def test_conventional_molding_with_holding_runs_on_the_new_shapes(shape):
     at = _app()
     at.radio(key="fg_runner_shape").set_value(shape).run()
     at.radio(key="wall_model").set_value("multilayer")
-    at.checkbox(key="two_phase_on").set_value(False)
+    _two_phase(at, False)
     at.radio(key="molding_method").set_value("conventional")
     at.checkbox(key="hold_on").set_value(True).run()
     at.number_input(key="hold_t_s").set_value(10.0).run()
@@ -183,7 +184,7 @@ def _open_direct(layout="diagonal2"):
     at = _app()
     at.radio(key="fg_runner_shape").set_value("direct").run()
     at.radio(key="fg_direct_layout").set_value(layout).run()
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     return at
 
 
@@ -261,22 +262,3 @@ def test_delayed_direct_gates_need_the_time_marched_fill_and_conventional_moldin
     at.button[0].click().run()
     assert not at.exception
     assert at.session_state["mfs_geom"].delayed_gates == []
-
-
-def test_the_two_phase_short_shot_is_skipped_with_a_delayed_gate():
-    """Its injection-phase times are rebuilt from the volume order, which knows
-    nothing of a valve that opens later (Codex P2 on PR #28)."""
-    at = _open_direct()
-    at.radio(key="fg_direct_open_mode").set_value("delay").run()
-    at.number_input(key="fg_direct_delay_s").set_value(0.2).run()
-    at.checkbox(key="two_phase_on").set_value(True).run()
-    at.button[0].click().run()
-    assert not at.exception
-    assert at.session_state["mfs_two_phase_result"] is None
-    assert "直接ゲートを遅らせて開く設定では解きません" in _texts(at)
-    assert len(at.session_state["mfs_result"].metadata["gate_events"]) == 1
-    # opening together, the short shot is solved as before
-    at.radio(key="fg_direct_open_mode").set_value("together").run()
-    at.button[0].click().run()
-    assert not at.exception
-    assert at.session_state["mfs_two_phase_result"] is not None

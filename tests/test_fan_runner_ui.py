@@ -9,12 +9,13 @@ import pytest
 from core import FanRunnerPlateConfig
 from tests.ui_helpers import app as _app
 from tests.ui_helpers import texts as _texts
+from tests.ui_helpers import two_phase as _two_phase
 
 
 def test_the_defaults_are_the_drawing_and_are_recorded_in_full():
     at = _app(fast=False)
     assert not at.exception
-    at.checkbox(key="two_phase_on").set_value(False)
+    _two_phase(at, False)
     at.slider(key="fg_cell_size_mm").set_value(4.0).run()
     at.button[0].click().run()
     assert not at.exception
@@ -65,7 +66,7 @@ def test_every_geometry_widget_reaches_the_builder():
     at.number_input(key="fg_runner_thk_mm").set_value(3.5).run()
     assert not at.exception
     assert at.session_state["mfs_shot_volume_auto"] > v0
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     at.button[0].click().run()
     assert not at.exception
     cfg = at.session_state["mfs_settings"]["geometry"]["config"]
@@ -101,7 +102,7 @@ def test_a_second_run_removes_the_previous_output_directory():
     from pathlib import Path
 
     at = _app()
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     at.button[0].click().run()
     assert not at.exception
     first = Path(at.session_state["mfs_tmp_dir"])
@@ -119,7 +120,7 @@ def test_changing_an_input_after_a_run_marks_the_result_stale_until_rerun():
     no longer matches the run it shows, and the cached result must stay (no
     silent re-solve)."""
     at = _app()
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     at.button[0].click().run()
     assert not at.exception
     result = at.session_state["mfs_result"]
@@ -162,7 +163,7 @@ def test_the_balancer_toggle_thins_the_runner_and_follows_its_bounds():
     assert not at.exception
     assert "形状パラメータが不正" not in _texts(at)
     assert at.number_input(key="fg_balancer_w_mm").value == 80.0
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     at.button[0].click().run()
     assert not at.exception
     cfg = at.session_state["mfs_settings"]["geometry"]["config"]
@@ -192,7 +193,7 @@ def test_a_runner_too_short_for_a_balancer_warns_instead_of_an_unfixable_error()
     assert "形状パラメータが不正" not in _texts(at)
     assert "肉盗みを置けない" in _texts(at)
     assert "fg_balancer_h_mm" not in {n.key for n in at.number_input}
-    at.checkbox(key="two_phase_on").set_value(False).run()
+    _two_phase(at, False).run()
     at.button[0].click().run()
     assert not at.exception
     assert at.session_state["mfs_settings"]["geometry"]["config"]["balancer_on"] is False

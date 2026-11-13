@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from tests.ui_helpers import app as _page
 from tests.ui_helpers import texts as _texts
+from tests.ui_helpers import two_phase as _two_phase
 
 
 def _app():
@@ -33,7 +34,7 @@ def test_the_iteration_cap_defaults_to_the_solver_default():
 
 def test_the_result_pane_reports_iterations_and_warns_on_cut_off():
     at = _app()
-    at.checkbox(key="two_phase_on").set_value(False)
+    _two_phase(at, False)
     # pin the growth constant: the convergence test is "first iteration whose
     # relative tau change is below tol", so with c_skin = 0 (no skin, tau
     # unchanged) even one iteration would count as converged. At c_skin = 1 on
@@ -64,6 +65,7 @@ def test_the_two_phase_pane_reports_its_own_injection_phase_loop():
     cap; a cut-off there must be reported in the (expanded) two-phase pane,
     not only for the main solve."""
     at = _app()
+    at.radio(key="molding_method").set_value("icm").run()  # the two-phase short shot is ICM's
     assert at.checkbox(key="two_phase_on").value is True
     (c_skin,) = [s for s in at.slider if str(s.label).startswith("スキン層成長定数")]
     c_skin.set_value(1.0)
