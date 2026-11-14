@@ -112,6 +112,11 @@ def _drive(u: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return u / scale, 1.0 / scale**2
 
 
+# While the machine's rate limits the gate pressure, a step is accepted when it
+# takes in melt at the rate to within this share, after at most this many tries.
+_RATE_BAND = 0.1
+_RATE_TRIES = 10
+
 _FO_GRID = np.logspace(-5.0, 1.0, 601)
 _SERIES_TERMS = 500
 _theta_tables: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -694,11 +699,20 @@ def solve_packing(
     # the holding pressure would draw more than that, the gate pressure is
     # held below it (the machine is still limited by its speed, as in the
     # fill), and it climbs to the holding pressure as the cavity fills up.
+    # Each step looks for the gate pressure that takes in melt at that rate
+    # (within ``_RATE_BAND``): a pressure that draws too much and one that
+    # stays within the rate close in on it from both sides. Bringing the
+    # pressure down alone is not enough: the melt already in the cavity is
+    # compressed by the pressure's rise within the step, an inflow ∝ Δp / Δt
+    # that a short step makes large, so the first cut lands far below the
+    # rate and the machine would then idle at a fraction of its speed while
+    # the thin sections freeze.
     rate_cap = None if max_inflow_m3_s is None else float(max_inflow_m3_s)
     rho_gate = float(rho0[gate_idx].mean())
     p_gate_now = float(start_pressure_Pa) if rate_cap is not None else float(hold_pressure_Pa)
     gate_hist = [p_gate_now if hold_time_s > 0.0 else 0.0]
 
+    climb = None  # Pa/s: the gate pressure's climb over the last step the machine's rate held back
     t = 0.0
     dt = float(dt_first_s)
     next_frame = 1
@@ -707,27 +721,70 @@ def solve_packing(
         limit = min(hold_time_s, end_time_s) if gate_open else end_time_s
         dt_try = min(dt, limit - t)
         if gate_open and rate_cap is not None:
-            # try to come up towards the holding pressure, a factor per step
-            p_try = min(float(hold_pressure_Pa), max(p_gate_now * 1.5, p_gate_now + 1.0e5))
+            # how far the step first looks towards the holding pressure (further, a
+            # factor at a time, while the machine is still below its rate there)
+            top = min(float(hold_pressure_Pa), max(p_gate_now * 1.5, p_gate_now + 1.0e5))
+            # While the machine is at its rate the pressure climbs steadily: start a
+            # little above where the last step's climb leads, not at ``top``.
+            p_try = top if climb is None else min(top, p_gate_now + 1.2 * climb * dt_try)
         else:
-            p_try = float(hold_pressure_Pa)
+            top = p_try = float(hold_pressure_Pa)
         tries = 0
+        within = None  # the highest pressure tried that kept to the machine's rate, with its solve
+        beyond = None  # the lowest pressure tried that drew more than the rate: (pressure, rate)
         while True:
-            u_new, mass_new, inflow, ok, used, theta_new = step(
-                u, mass, t + dt_try, dt_try, p_try if gate_open else None
-            )
+            solved = step(u, mass, t + dt_try, dt_try, p_try if gate_open else None)
+            u_new, mass_new, inflow, ok, used, theta_new = solved
             if not ok and dt_try > 1e-5:
                 dt_try *= 0.5
+                within = beyond = None  # they belong to the longer step
                 continue
             rate = inflow / (rho_gate * dt_try)
-            if gate_open and rate_cap is not None and rate > 1.1 * rate_cap and tries < 6:
+            if not gate_open or rate_cap is None:
+                break
+            if rate > (1.0 + _RATE_BAND) * rate_cap:
+                if beyond is None or p_try < beyond[0]:
+                    beyond = (p_try, rate)
+            else:
+                if within is None or p_try > within[0]:
+                    within = (p_try, rate, solved)
+                if rate >= (1.0 - _RATE_BAND) * rate_cap:
+                    break  # the machine is at its rate
+                if p_try >= top:
+                    if top >= float(hold_pressure_Pa):
+                        break  # the holding pressure itself draws less than the rate
+                    # the machine has more to give: let this step go further up
+                    top = min(float(hold_pressure_Pa), max(top * 1.5, top + 1.0e5))
+            if tries >= _RATE_TRIES or (
+                within is not None
+                and beyond is not None
+                and beyond[0] - within[0] < 1e-3 * beyond[0]
+            ):
+                break
+            tries += 1
+            if within is None:
                 # flow ∝ Δp^(1/n) at worst: bring the pressure down by the rate ratio to the n
                 p_try = max(p_try * (rate_cap / rate) ** max(float(material.n), 0.2), 1.0e2)
-                tries += 1
-                continue
-            break
+            elif beyond is None:
+                # the start was too low: three times as far from where the step began
+                reach = max(3.0 * (p_try - p_gate_now), 0.02 * p_gate_now + 1.0e4)
+                p_try = min(top, max(p_try, p_gate_now) + reach)
+            else:
+                # between the two: where the straight line through their rates meets the
+                # machine's (the compression of the melt is linear in the pressure), kept
+                # off the ends so a curved stretch still closes the gap in a few tries
+                share = (rate_cap - within[1]) / (beyond[1] - within[1])
+                p_try = within[0] + min(max(share, 0.05), 0.95) * (beyond[0] - within[0])
+        if within is not None and within[0] != p_try:
+            # the search ended on a pressure that draws too much: go back to the best that did not
+            p_try, rate, solved = within
+            u_new, mass_new, inflow, ok, used, theta_new = solved
+        if gate_open and rate_cap is not None:
+            # (a step that ended below the rate was not held back by the machine)
+            limited = beyond is not None or rate >= (1.0 - _RATE_BAND) * rate_cap
+            climb = max(p_try - p_gate_now, 0.0) / dt_try if limited else None
         unconverged += 0 if ok else 1
-        if gate_open and rate_cap is not None and rate > 1.1 * rate_cap:
+        if gate_open and rate_cap is not None and rate > (1.0 + _RATE_BAND) * rate_cap:
             # accepted as it is, but counted: the answer took in melt faster than the machine
             over_rate += 1
         if gate_open:
