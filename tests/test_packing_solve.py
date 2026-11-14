@@ -334,6 +334,40 @@ def test_rate_cap_slows_the_pressure_rise_of_a_full_cavity():
     assert np.allclose(capped.shrinkage, free.shrinkage, atol=5e-4)
 
 
+@pytest.mark.parametrize("dt_max_s", [None, 0.005, 0.001])
+def test_rate_cap_keeps_the_machine_at_its_rate_whatever_the_step(dt_max_s):
+    # With short steps the search for the gate pressure used to settle far below the
+    # machine's rate (the melt in the cavity is compressed within the step, an inflow
+    # ∝ Δp / Δt), and the gate idled at a fraction of the holding pressure.
+    mask, thk, t_arr, gates, rate = _channel()
+    r = _solve(
+        mask,
+        thk,
+        t_arr,
+        gates,
+        60e6,
+        3.0,
+        switch_fill_fraction=0.8,
+        max_inflow_m3_s=rate,
+        end_time_s=1.0,
+        dt_max_s=dt_max_s,
+    )
+    # the melt's density, from the mass the fill left in 80 % of the channel
+    rho = r.initial_mass_kg / (0.8 * mask.sum() * 4e-6 * 3e-3)
+    taken = np.diff(r.added_mass_kg) / np.diff(r.times_s) / (rate * rho)
+    climbing = (r.times_s[1:] > 0.02) & (r.gate_pressure_Pa[1:] < 0.9 * 60e6)
+    assert climbing.sum() >= 5
+    # while the gate is below the holding pressure the machine runs at its rate ...
+    assert taken[climbing].min() > 0.8
+    assert taken[climbing].max() < 1.15
+    # ... so the gate is at the holding pressure soon after the rest is in
+    # (20 % of the volume at that rate: 0.3 s)
+    reached = r.times_s[np.argmax(r.gate_pressure_Pa >= 60e6 * (1.0 - 1e-9))]
+    assert 0.3 < reached < 0.5
+    assert r.rate_cap_exceeded_steps == 0
+    assert r.unconverged_steps == 0
+
+
 def test_end_time_before_the_gate_closes_is_not_overrun():
     mask, thk, t_arr, gates = _plate(3.0, 1.0, ny=4, nx=12)
     seen = []
