@@ -368,6 +368,40 @@ def test_rate_cap_keeps_the_machine_at_its_rate_whatever_the_step(dt_max_s):
     assert r.unconverged_steps == 0
 
 
+def test_steps_follow_the_time_since_the_switch_so_a_thin_section_is_resolved():
+    # A 1 mm end on a 3 mm channel freezes within the first second. Steps that
+    # only grow by a factor are tenths of a second long by then, and the thin
+    # end's packing depends on where they fall.
+    mask, thk, t_arr, gates, _ = _channel()
+    thk[:, 20:] = 1.0
+    rate = (20 * 3.0 + 10 * 1.0) * 4 * 4e-6 * 1e-3 / 1.5
+    kw = {"thermal": "layers", "switch_fill_fraction": 0.9, "max_inflow_m3_s": rate}
+
+    def thin_end(**step):
+        r = _solve(mask, thk, t_arr, gates, 60e6, 3.0, **kw, **step)
+        assert r.unconverged_steps == 0
+        return r, 100.0 * float(np.nanmean(r.shrinkage[:, 20:]))
+
+    by_factor, coarse = thin_end(dt_time_share=None)
+    default, shared = thin_end()
+    finer, fine = thin_end(dt_time_share=0.02)
+    assert len(by_factor.times_s) < len(default.times_s) < len(finer.times_s)
+    # no step is longer than the share of the time before it (past the first ones)
+    t = default.times_s
+    late = t[:-1] > 0.1
+    assert np.all(np.diff(t)[late] <= 0.05 * t[:-1][late] * (1.0 + 1e-9))
+    # the default is within a few hundredths of a per cent of the finer march ...
+    assert abs(shared - fine) < 0.04
+    # ... where the steps that only grow were over a tenth off
+    assert abs(coarse - fine) > 0.1
+
+
+def test_step_share_of_the_time_must_be_positive():
+    mask, thk, t_arr, gates = _plate(3.0, 1.0)
+    with pytest.raises(ValueError, match="dt_time_share"):
+        _solve(mask, thk, t_arr, gates, 60e6, 3.0, dt_time_share=0.0)
+
+
 def test_end_time_before_the_gate_closes_is_not_overrun():
     mask, thk, t_arr, gates = _plate(3.0, 1.0, ny=4, nx=12)
     seen = []

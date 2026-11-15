@@ -256,6 +256,7 @@ def solve_packing(
     dt_first_s: float = 2e-3,
     dt_max_s: float | None = None,
     dt_growth: float = 1.3,
+    dt_time_share: float | None = 0.05,
     n_frames: int | None = None,
     start_pressure_Pa: float = 1.0e6,
     switch_fill_fraction: float = 1.0,
@@ -293,6 +294,13 @@ def solve_packing(
     been full and has since shrunk away from the wall (its pressure is gone:
     ``u < 0``); ``None`` keeps the packing value there.
     ``progress(t, end_time)`` is called after every time step.
+    The steps start at ``dt_first_s`` and grow by ``dt_growth`` up to ``dt_max_s``
+    (default: a sixtieth of the end time, 0.1 s at least), and a step is at most
+    ``dt_time_share`` of the time since the switch (``None``: no such limit). The
+    cavity cools on the scale of that time, so the share keeps the same relative
+    resolution throughout; without it the steps reach tenths of a second in the
+    first second, when a 1 mm section freezes, and that section's packing comes
+    out a tenth of a per cent short.
     ``end_time_s`` defaults to the later of the holding time and the moment
     the last cell's centre solidifies. The pressure field is kept at every
     time step (the first steps are milliseconds apart, so the rise shows);
@@ -303,6 +311,8 @@ def solve_packing(
         raise ValueError(f"material {material.key} has no pvT data")
     if hold_pressure_Pa < 0.0 or hold_time_s < 0.0:
         raise ValueError("hold pressure and time must be >= 0")
+    if dt_time_share is not None and not dt_time_share > 0.0:
+        raise ValueError("dt_time_share must be > 0 (or None)")
     if thermal not in ("series", "layers"):
         raise ValueError(f"thermal must be 'series' or 'layers' (got {thermal!r})")
     layered = thermal == "layers"
@@ -835,6 +845,8 @@ def solve_packing(
             dt = float(dt_first_s) * 5.0  # the gate closing is a jump
         else:
             dt = min(dt_try * dt_growth, dt_max_s)
+            if dt_time_share is not None:
+                dt = min(dt, max(dt_time_share * t, float(dt_first_s)))
 
     p = np.maximum(u, 0.0)
     p_freeze[np.isnan(p_freeze)] = p[np.isnan(p_freeze)]
